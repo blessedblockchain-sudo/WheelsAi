@@ -8,7 +8,7 @@ import { Callout, DocTable } from "@/components/marketing/prose";
 export const metadata: Metadata = {
   title: "Publish to the marketplace",
   description:
-    "List a WheelsAI agent on the marketplace, sell use of it or copies of it, choose free, per-use, monthly or tokenized pricing, add plans with a number of uses, understand the 90/10 revenue split, who uses or installs it and payouts.",
+    "List a WheelsAI agent on the marketplace, sell use of it or copies of it, choose free, per-use, monthly or tokenized pricing, add plans with a number of uses, sell a workflow per run, understand the 90/10 revenue split, who uses or installs it and payouts.",
 };
 
 const toc = [
@@ -19,6 +19,9 @@ const toc = [
   { id: "earn", title: "What you earn", sub: true },
   { id: "guaranteed", title: "Guaranteed delivery", sub: true },
   { id: "model-stops", title: "When the model stops", sub: true },
+  { id: "sell-workflow", title: "Sell a workflow" },
+  { id: "workflow-runs", title: "What a paid run is", sub: true },
+  { id: "workflow-on-sale", title: "While it is on sale", sub: true },
   { id: "publish", title: "Publish a listing" },
   { id: "pricing", title: "Pricing models" },
   { id: "free", title: "Free", sub: true },
@@ -31,6 +34,7 @@ const toc = [
   { id: "using", title: "Using an agent", sub: true },
   { id: "on-a-plan", title: "On a plan", sub: true },
   { id: "on-a-trial", title: "On a free trial", sub: true },
+  { id: "running-a-workflow", title: "Running a workflow", sub: true },
   { id: "owning", title: "Owning a copy", sub: true },
   { id: "use-or-copies", title: "Sell use, or sell copies" },
   { id: "payouts", title: "Getting paid" },
@@ -226,6 +230,84 @@ export default function MarketplaceGuidePage() {
         <code>listing_paused</code> and a use with <code>503</code> <code>agent_paused</code>; see the{" "}
         <Link href="/docs/api/marketplace#use">marketplace reference</Link>.
       </p>
+
+      <h2 id="sell-workflow">Sell a workflow</h2>
+      <p>
+        A workflow is sold the same way. Open it under <strong>Workflows</strong>, choose its <strong>API</strong> tab and
+        find the <strong>Sell</strong> card. It asks <strong>Who can use it?</strong> with one answer,{" "}
+        <strong>Pay per run</strong>: &quot;People pay for each run from their WheelsAI credits.&quot; Fill in the{" "}
+        <strong>Title</strong> and <strong>One line</strong> buyers see, set the price of a run, from $0.05, add plans
+        if you want them, and choose <strong>Put it on sale</strong>. The address of its page is made from the first
+        title, and a later change of title keeps it. People run your workflow on its page or through the API. They
+        never see its steps, its agents or its settings.
+      </p>
+      <ul>
+        <li>
+          <strong>Plans</strong> work as they do for an agent sold per use: up to four, each a price for 30 days and a
+          number of runs, and what happens when they run out. A workflow has no free trial.
+        </li>
+        <li>
+          Once it is on sale, the card shows the address of the page people use, <code>/w/&#123;slug&#125;</code>, and
+          the model id for the API, <code>w/&#123;slug&#125;</code>, each with a copy button. Both are named after the
+          listing. The workflow&apos;s own <code>workflow/&lt;slug&gt;</code> stays your address: a call to it runs as
+          you and counts as an API call on your plan.
+        </li>
+        <li>
+          Buyers see the listing&apos;s title and its one line, the price per run and your plans. Its listing in the{" "}
+          <Link href="/marketplace">marketplace</Link> says <strong>Workflow</strong> where an agent&apos;s says its
+          framework.
+        </li>
+        <li>
+          <strong>Stop selling</strong> takes it off the marketplace. People on a plan keep it until the 30 days they
+          paid for end, through the API: its page is no longer shown.
+        </li>
+      </ul>
+      <p>
+        Over the API, list it with <code>orchestrationId</code> in place of <code>agentId</code>; see{" "}
+        <Link href="/docs/api/workflows#sell">Sell a workflow</Link> in the reference.
+      </p>
+
+      <h3 id="workflow-runs">What a paid run is</h3>
+      <p>The Sell card tells you four things:</p>
+      <ul>
+        <li>Steps that ran before a run failed or was cancelled are your cost.</li>
+        <li>A paid run is stopped after 10 minutes.</li>
+        <li>
+          In a paid run your steps cannot move money, change your saved files or call a web address with the HTTP
+          request tool.
+        </li>
+        <li>Paid runs appear in this workflow&apos;s runs, with what the buyer sent.</li>
+      </ul>
+      <p>
+        The run list names such a run <strong>Paid run by a buyer</strong>, and nothing in it names the buyer. A buyer
+        is charged when the run starts. You keep 90% of the price once the answer is delivered: at $0.25 a run you earn
+        $0.22. When your steps run on WheelsAI&apos;s models, the cost of the model comes out of your share. A run that
+        fails, takes too long or is cancelled is refunded to the buyer, and you earn nothing for it. At most 3 paid runs
+        of one workflow go at once, shared by everyone who uses it, and they do not count toward the runs your
+        organization may have going.
+      </p>
+
+      <h3 id="workflow-on-sale">While it is on sale</h3>
+      <p>
+        A workflow can go on sale only when it is enabled, has steps, uses only agents you built and has a time limit of
+        10 minutes or less. When one of these is missing, the Sell card says so.
+      </p>
+      <ul>
+        <li>
+          While it is on sale, or anyone is still on a plan for it, you cannot disable it or change it so that it could
+          not be sold, and you cannot delete it. Stop selling it first. A workflow people have paid for cannot be
+          deleted at all: stop selling it instead.
+        </li>
+        <li>
+          If a model step&apos;s deployment stops, or a step agent&apos;s model is no longer running, the workflow
+          cannot run: nobody can start it or run it, and nobody is charged. <strong>Stop</strong> on a deployment names
+          the workflows on sale that need it before it stops anything.
+        </li>
+        <li>
+          A plan that comes due while the workflow cannot run is not charged. If the workflow runs again within 3 days,
+          the plan is charged then; if not, it ends and is not charged. The days already paid for keep counting.
+        </li>
+      </ul>
 
       <h2 id="publish">Publish a listing</h2>
       <p>
@@ -427,7 +509,9 @@ curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/publish"
         <strong>Use this agent</strong> when you use the creator&apos;s agent, and <strong>Install Agent</strong> when you
         get a copy of your own. Both appear under{" "}
         <strong>Marketplace</strong>, <strong>Installed</strong>, marked <strong>You use it</strong> or <strong>Your copy</strong>, with
-        what each costs and how to stop. Buyers of either can leave a 1 to 5 star review with a title and text.
+        what each costs and how to stop. Buyers of either can leave a 1 to 5 star review with a title and text. A
+        listing of a workflow offers <strong>Use this workflow</strong>; see{" "}
+        <a href="#running-a-workflow">Running a workflow</a>.
       </p>
 
       <h3 id="using">Using an agent</h3>
@@ -579,6 +663,42 @@ curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/publish"
         From code, a trial is started with <Link href="/docs/api/marketplace#use">the start route</Link>; see{" "}
         <Link href="/docs/api/agents#paid-trial">the free trial</Link> in the reference.
       </p>
+
+      <h3 id="running-a-workflow">Running a workflow</h3>
+      <p>
+        <strong>Use this workflow</strong> on a listing opens the workflow&apos;s own page,{" "}
+        <code>/w/&#123;slug&#125;</code>, headed by the listing&apos;s title and line. You run the workflow there, from its
+        form under <strong>Run it</strong>, or from your code through{" "}
+        <Link href="/docs/api/workflows#use-paid">the endpoints of a workflow you pay for</Link>. You never see its steps,
+        its agents or its models.
+      </p>
+      <ul>
+        <li>
+          <strong>Per run or on a plan.</strong> When the workflow offers plans, the page shows them first, then the
+          price of one run: &quot;Or pay as you go: $0.25 a run&quot;. An owner or admin agrees to the price or starts
+          a plan, as for an agent. A run on a plan takes one of its uses. There is no free trial.
+        </li>
+        <li>
+          <strong>A run.</strong> Each run is charged when it starts, and refunded, or its use given back, if it does
+          not finish. The answer arrives whole once the run has ended. &quot;A run can take up to 10 minutes. Keep this
+          page open: closing it cancels the run.&quot; <strong>Stop</strong> cancels it too, and what was charged is
+          given back.
+        </li>
+        <li>
+          <strong>What the owner sees.</strong> &quot;The owner of this workflow gets a copy of what you send and what
+          it answers.&quot;
+        </li>
+        <li>
+          <strong>Limits.</strong> As for an agent: up to 10 runs a minute, and with no plan up to 200 a day. A
+          workflow also runs at most 3 paid runs at once for everyone who uses it; when it is that busy, try again in
+          a minute: nothing is charged, or what was charged is given back.
+        </li>
+        <li>
+          <strong>Installed and Usage.</strong> The workflow is listed under <strong>Marketplace</strong>,{" "}
+          <strong>Installed</strong> and on the <strong>Usage</strong> page beside the agents you use, and each row
+          opens its page. <strong>Stop using</strong> works as it does for an agent.
+        </li>
+      </ul>
 
       <h3 id="owning">Owning a copy</h3>
       <p>

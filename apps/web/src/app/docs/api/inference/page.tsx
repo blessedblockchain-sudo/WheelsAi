@@ -53,6 +53,14 @@ export default function InferenceApiPage() {
             the answer; see <Link href="/docs/api/workflows#openai">the workflow endpoint</Link>.
           </li>
           <li>
+            <code>a/&lt;handle&gt;</code>: an agent another organization sells that you pay to use; see{" "}
+            <Link href="/docs/api/agents#paid-v1">an agent you pay for</Link>.
+          </li>
+          <li>
+            <code>w/&lt;slug&gt;</code>: a workflow another organization sells that you pay to run, by the slug of its
+            listing; see <Link href="/docs/api/workflows#w-v1">a workflow you pay for</Link>.
+          </li>
+          <li>
             any other value is the slug of a running model deployment, handled and billed exactly as{" "}
             <a href="#chat-completions">its own endpoint</a> below.
           </li>
@@ -388,8 +396,12 @@ for await (const chunk of stream) {
           OpenAI-style list of everything you can pass as <code>model</code> on the{" "}
           <a href="#base-url">unified base URL</a>: your organization&apos;s running deployments (<code>id</code> is the
           deployment slug, <code>root</code> the underlying Hugging Face model id) and your agents (<code>id</code> is{" "}
-          <code>agent/&lt;slug&gt;</code>). <code>wheelsai.kind</code> says which is which. Listing is free: it does not count
-          as an API call.
+          <code>agent/&lt;slug&gt;</code>). It also lists your enabled workflows (<code>workflow/&lt;slug&gt;</code>), and
+          the agents (<code>a/&lt;handle&gt;</code>) and workflows (<code>w/&lt;slug&gt;</code>) of other organizations
+          that yours has started and pays for, on a plan that is running or at a price it agreed to.{" "}
+          <code>wheelsai.kind</code> says which is which:{" "}
+          <code>deployment</code>, <code>agent</code>, <code>workflow</code>, <code>paid_agent</code> or{" "}
+          <code>paid_workflow</code>. Listing is free: it does not count as an API call.
         </p>
         <CodeBlock
           language="json"

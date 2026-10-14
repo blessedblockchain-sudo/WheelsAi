@@ -243,7 +243,8 @@ export default function DeploymentsApiPage() {
         <p>
           Read it before a stop. Returns the agents of your organization that will stop answering if this deployment is
           stopped now: agents set to the model it runs, when no other running deployment of yours would answer for
-          that model. It changes nothing. A deployment that is not live has none.
+          that model. It changes nothing. A deployment that is not live has none. It also returns, under{" "}
+          <code>workflows</code>, the workflows you sell that could not run without it.
         </p>
         <CodeBlock
           language="json"
@@ -255,7 +256,8 @@ export default function DeploymentsApiPage() {
       "onSale": true,
       "listing": { "id": "…", "title": "Support Bot", "pricingModel": "monthly", "subscribers": 3 }
     }
-  ]
+  ],
+  "workflows": []
 }`}
         />
         <p>
@@ -263,6 +265,17 @@ export default function DeploymentsApiPage() {
           listing, or <code>null</code>. <code>subscribers</code> counts its subscriptions that are <code>active</code> or{" "}
           <code>past_due</code>. A listing whose agent cannot answer is paused; see{" "}
           <Link href="/docs/guides/marketplace#model-stops">When the model stops</Link>.
+        </p>
+        <p>
+          Each entry of <code>workflows</code> is{" "}
+          <code>&#123; id, name, onSale, listing: &#123; id, title, subscribers &#125;, renewalGraceDays &#125;</code>: a
+          workflow of yours whose listing is published (<code>onSale</code> <code>true</code>), or that somebody&apos;s
+          plan still runs on (<code>false</code>), and that has a model step on this deployment or a step agent that
+          answers from it. While it cannot run, a plan on it that comes due is not charged; it is charged if the
+          workflow runs again within <code>renewalGraceDays</code> days after the plan&apos;s 30 days ended, and ends
+          uncharged after that. That holds while its listing is published; once it is not (<code>onSale</code>{" "}
+          <code>false</code>), every plan on it ends at the end of its 30 days, uncharged, whatever the workflow can
+          do. See <Link href="/docs/api/workflows#sellable">what keeps a workflow on sale</Link>.
         </p>
       </Endpoint>
 

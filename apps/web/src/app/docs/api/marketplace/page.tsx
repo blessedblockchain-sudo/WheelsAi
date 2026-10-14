@@ -9,7 +9,7 @@ import { DocTable } from "@/components/marketing/prose";
 export const metadata: Metadata = {
   title: "Marketplace API",
   description:
-    "WheelsAI marketplace API: search listings, publish and manage your own, sell use of an agent or copies of it, set a listing's plans, start using an agent or a plan, install a copy, reviews, subscriptions, what you use and spend, revenue and payouts.",
+    "WheelsAI marketplace API: search listings, publish and manage your own, sell use of an agent or copies of it, sell a workflow per run, set a listing's plans, start using an agent or a plan, install a copy, reviews, subscriptions, what you use and spend, revenue and payouts.",
 };
 
 const toc = [
@@ -64,7 +64,12 @@ export default function MarketplaceApiPage() {
 
       <Endpoint id="get-listing" method="GET" path="/api/marketplace/listings/{slugOrId}" auth="Public" title="Get a listing">
         <p>
-          Returns <code>&#123; listing &#125;</code>. Besides its title, description and pricing, a listing says what it sells:{" "}
+          Returns <code>&#123; listing &#125;</code>. <code>productKind</code> is <code>agent</code>, or{" "}
+          <code>workflow</code> for a listing that sells runs of a workflow: its <code>agentId</code> is then{" "}
+          <code>null</code>, it has no <code>agent</code>, its <code>unit</code> is <code>run</code>, its{" "}
+          <code>trial</code> is <code>&#123; enabled: false &#125;</code>, and it is used at{" "}
+          <code>/w/&#123;slug&#125;</code> (see <Link href="/docs/api/workflows#use-paid">a workflow you pay for</Link>).
+          Besides its title, description and pricing, a listing says what it sells:{" "}
           <code>sells</code> is <code>use</code> (buyers use the creator&apos;s own agent and never get a copy) or{" "}
           <code>copies</code> (buyers install their own copy). <code>unit</code> is what one payment buys:{" "}
           <code>message</code>, <code>run</code> or <code>month</code>, and <code>null</code> for a free listing or a copy.{" "}
@@ -105,7 +110,8 @@ export default function MarketplaceApiPage() {
       <Endpoint id="create-listing" method="POST" path="/api/marketplace/listings" auth="API key or session" title="Create a listing (draft)">
         <Fields
           fields={[
-            { name: "agentId", type: "uuid", required: true, description: "One of your agents." },
+            { name: "agentId", type: "uuid", description: <>One of your agents. Send it, or <code>orchestrationId</code>: one of the two.</> },
+            { name: "orchestrationId", type: "uuid", description: <>One of your workflows, to sell it per run, in place of <code>agentId</code>. Its rules are in <Link href="/docs/api/workflows#list-workflow">Sell a workflow</Link>.</> },
             { name: "title", type: "string", required: true, description: "3 to 100 characters." },
             { name: "shortDescription", type: "string", required: true, description: "10 to 280 characters." },
             { name: "category", type: "enum", required: true, description: "One of the categories above." },
@@ -123,10 +129,15 @@ export default function MarketplaceApiPage() {
         />
         <p>
           Answers <code>201</code> with <code>&#123; listing &#125;</code>, which for you also carries{" "}
-          <code>allowedTools</code>. Free and tokenized listings ignore prices. Refusals carry a plain{" "}
+          <code>allowedTools</code> and <code>orchestrationId</code> (<code>null</code> on an agent&apos;s listing). Free
+          and tokenized listings ignore prices. Refusals carry a plain{" "}
           <code>message</code>; show it as it comes.
         </p>
         <ul>
+          <li>
+            <code>400</code> <code>validation_failed</code> on <code>agentId</code>: &quot;Send agentId or orchestrationId,
+            one of them.&quot; The request named both, or neither.
+          </li>
           <li>
             <code>409</code> <code>marketplace_copy</code>: the agent came from the marketplace, so it cannot be sold again,
             as use or as copies.
@@ -160,7 +171,8 @@ export default function MarketplaceApiPage() {
 
       <Endpoint id="manage-listing" method="PATCH" path="/api/marketplace/listings/{id}" auth="API key or session" title="Update, publish or archive">
         <p>
-          <code>PATCH</code> accepts any create field except <code>agentId</code>; pricing is re-validated as a whole.{" "}
+          <code>PATCH</code> accepts any create field except <code>agentId</code> and <code>orchestrationId</code>: a
+          listing keeps what it sells. Pricing is re-validated as a whole.{" "}
           <code>sells</code>, <code>allowedTools</code> and <code>publish</code> work the same on update, with the same
           refusals. <code>POST /api/marketplace/listings/&#123;id&#125;/publish</code> makes a draft visible (a listing that is
           already published answers <code>200</code>) and{" "}
@@ -172,7 +184,7 @@ export default function MarketplaceApiPage() {
           that was first seen (an ISO date), or <code>null</code> when it has not been noted yet. See{" "}
           <Link href="/docs/guides/marketplace#model-stops">When the model stops</Link>. Each also carries{" "}
           <code>plans</code>, the plans it has on offer as <a href="#plans">the route below</a> answers them, its free
-          trial first when it offers one.
+          trial first when it offers one. Each also carries <code>productKind</code> and <code>orchestrationId</code>.
         </p>
       </Endpoint>
 
@@ -300,6 +312,12 @@ export default function MarketplaceApiPage() {
             { status: "409", error: <code>plans_changed</code>, when: "The plans were changed somewhere else since they were read, or another save got there first. Nothing was written." },
           ]}
         />
+        <p>
+          A listing that sells a workflow has plans as a listing sold per use does, where one run is one use, and no
+          free trial: an entry of kind <code>trial</code> is refused with <code>400</code>{" "}
+          <code>validation_failed</code> on its <code>kind</code>, &quot;A free trial can be offered on an agent
+          only.&quot;
+        </p>
       </Endpoint>
 
       <h2 id="buy">Install and use</h2>
@@ -308,7 +326,9 @@ export default function MarketplaceApiPage() {
         use the creator&apos;s own agent on its page, with{" "}
         <Link href="/docs/api/agents#paid-use">the paid-use endpoints</Link>, or through <code>POST /v1/chat/completions</code>.
         You never get a copy or its instructions. A listing that sells <code>copies</code> is installed: you get your own copy
-        of the agent to run. To have a publisher&apos;s agent, workflow or model do one
+        of the agent to run. A listing that sells a workflow is used too, on the workflow&apos;s page{" "}
+        <code>/w/&#123;slug&#125;</code> and with <Link href="/docs/api/workflows#use-paid">the endpoints of a workflow
+        you pay for</Link>. To have a publisher&apos;s agent, workflow or model do one
         fixed task for you instead, with the price held in escrow until you accept the result, see{" "}
         <Link href="/docs/api/jobs">Offerings and jobs</Link>.
       </p>
@@ -316,7 +336,7 @@ export default function MarketplaceApiPage() {
       <Endpoint id="use" method="POST" path="/api/marketplace/listings/{id}/use" auth="Owner or admin, or a key granted marketplace:install" title="Start using an agent">
         <p>
           Agrees to the price of a listing that sells use. Nothing is copied: you use the creator&apos;s own agent at{" "}
-          <code>/a/&#123;handle&#125;</code>. A price per use charges nothing now; each use is charged when it is sent. A monthly
+          <code>/a/&#123;handle&#125;</code>, or their workflow at <code>/w/&#123;slug&#125;</code>. A price per use charges nothing now; each use is charged when it is sent. A monthly
           price charges the first 30 days from your credits now. An API key needs the <code>marketplace:install</code> scope
           granted by name (<code>403</code> otherwise); see <Link href="/docs/api/jobs#keys">API keys that can spend</Link>.
           The same route starts a plan, moves you up to a bigger one, and starts a listing&apos;s{" "}
@@ -333,7 +353,8 @@ export default function MarketplaceApiPage() {
         <p>
           Answers <code>201</code> when this request started or accepted something, and <code>200</code> when you were already
           using the agent or the listing is free, with{" "}
-          <code>&#123; access, acceptedPricing, subscription, agent: &#123; handle, name, agentKind &#125; &#125;</code>.{" "}
+          <code>&#123; access, acceptedPricing, subscription, productKind, slug, agent: &#123; handle, name, agentKind &#125; &#125;</code>;{" "}
+          <code>slug</code> is the listing&apos;s, and <code>agent</code> is <code>null</code> for a workflow.{" "}
           <code>acceptedPricing</code> is <code>&#123; pricingModel, pricePerRequestCents, acceptedAt &#125;</code>, or{" "}
           <code>null</code> when no price was agreed. A plan start, a move and a start of a free trial always answer{" "}
           <code>201</code>; their <code>subscription</code> carries <code>plan</code>, the count as{" "}
@@ -372,8 +393,13 @@ export default function MarketplaceApiPage() {
           </li>
           <li><code>404</code> <code>listing_not_found</code>.</li>
           <li><code>409</code> <code>sells_copies</code>: the listing sells copies; install it instead.</li>
-          <li><code>409</code> <code>own_agent</code>: it is your organization&apos;s own agent.</li>
+          <li><code>409</code> <code>own_agent</code>: it is your organization&apos;s own agent, or workflow.</li>
           <li><code>409</code> <code>not_offered</code>: the listing is not on sale.</li>
+          <li>
+            For a workflow, <code>409</code> <code>not_offered</code> also when it cannot run right now: &quot;This
+            workflow cannot be started right now. Nothing was charged. Try again later.&quot; This covers a first
+            start, a plan and a move.
+          </li>
           <li>
             <code>409</code> <code>listing_paused</code>: the model the agent runs on is not running. Nothing was started
             and nothing was charged; try again later. This covers a first start, a new month and accepting a new price.
@@ -466,7 +492,9 @@ export default function MarketplaceApiPage() {
           </li>
           <li>
             <code>409</code> <code>sells_use</code> with <code>handle</code>: the listing sells use of the creator&apos;s agent, so
-            there is no copy to install. Start using it instead, at <code>/a/&#123;handle&#125;</code>.
+            there is no copy to install. Start using it instead, at <code>/a/&#123;handle&#125;</code>. For a workflow&apos;s
+            listing <code>handle</code> is <code>null</code>: &quot;You use this workflow on its page. You do not get a
+            copy.&quot;
           </li>
           <li>
             <code>409</code> <code>already_using</code> with <code>handle</code>: you already use this agent. A copy is not
@@ -477,7 +505,9 @@ export default function MarketplaceApiPage() {
           <code>GET /api/marketplace/listings/&#123;id&#125;/install-status</code> tells you whether you have it installed, and{" "}
           <code>GET /api/marketplace/my-installs</code> lists your installs, including lapsed ones and their subscriptions. Both
           describe a copy and a use the same way: <code>kind</code> is <code>copy</code> or <code>use</code>;{" "}
-          <code>agent</code> is <code>&#123; handle, name, agentKind &#125;</code>; <code>clonedAgentId</code> is the copy&apos;s id
+          <code>productKind</code> is <code>agent</code> or <code>workflow</code> and <code>slug</code> is the
+          listing&apos;s; <code>agent</code> is <code>&#123; handle, name, agentKind &#125;</code>, and <code>null</code> for
+          a workflow; <code>clonedAgentId</code> is the copy&apos;s id
           for a copy and <code>null</code> for a use, which has no copy. <code>access</code> says where it stands:{" "}
           <code>subscribed</code>, <code>listing_pricing</code>, <code>subscription_lapsed</code> and{" "}
           <code>pricing_changed</code> for either; <code>none</code> (not started), <code>plan_ended</code> (a plan or a
@@ -506,7 +536,8 @@ export default function MarketplaceApiPage() {
       <Endpoint id="uninstall" method="POST" path="/api/marketplace/listings/{id}/uninstall" auth="API key or session" title="Stop using, or uninstall">
         <p>
           Ends the licence. For a copy, the copy stays in your organization but refuses to run (<code>403</code>) until you
-          reinstall. For an agent you use, you stop using it. Either way a monthly subscription ends immediately and the
+          reinstall. For an agent you use, you stop using it, and the same for a workflow (&quot;You stopped using this
+          workflow.&quot;). Either way a monthly subscription ends immediately and the
           current period is not refunded. To keep access until the month you paid for ends, cancel the subscription instead
           (below).
         </p>
@@ -529,6 +560,13 @@ export default function MarketplaceApiPage() {
           suspended. A subscription for use of an agent is not renewed while its listing is paused, and the month paid for
           is made longer by the time the listing was paused.
         </p>
+        <p>
+          A plan on a workflow is not renewed while the workflow cannot run, and nothing is added to its period: it is
+          charged if the workflow runs again within 3 days after the 30 days ended, its new 30 days counting from the day
+          it was due, and it ends uncharged after that. That holds while its listing is published; once it is not,
+          every plan on it ends at the end of its 30 days, uncharged, whatever the workflow can do. See{" "}
+          <Link href="/docs/api/workflows#sellable">what keeps a workflow on sale</Link>.
+        </p>
       </Endpoint>
 
       <Endpoint id="usage" method="GET" path="/api/billing/marketplace-usage" auth="API key or session" title="What you use and spend">
@@ -546,6 +584,7 @@ export default function MarketplaceApiPage() {
       "listingId": "5d2f9c1e-...",
       "title": "Support Bot",
       "slug": "support-bot",
+      "productKind": "agent",
       "handle": "support-bot",
       "access": "subscribed",
       "trialEnded": false,
@@ -575,6 +614,11 @@ export default function MarketplaceApiPage() {
             <code>access</code> and <code>plan</code> are what{" "}
             <Link href="/docs/api/agents#paid-access">the access read</Link> answers for that agent.{" "}
             <code>plan</code> is <code>null</code> when you are on none.
+          </li>
+          <li>
+            <code>productKind</code> is <code>agent</code> or <code>workflow</code>. A workflow&apos;s row has no{" "}
+            <code>handle</code> (<code>null</code>): it is used at <code>/w/&#123;slug&#125;</code>, and its uses are
+            runs.
           </li>
           <li>
             <code>trialEnded</code> is always present. It is <code>true</code> only when <code>access</code> is{" "}

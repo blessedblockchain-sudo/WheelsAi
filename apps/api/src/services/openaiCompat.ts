@@ -438,6 +438,8 @@ export interface PaidUseRefusalLike {
   resetsAt?: string;
   /** plan_used_up and plan_ended: the plans on offer. */
   plans?: unknown;
+  /** The refusal came after a charge that was given back: a client must not send the request again by itself. */
+  noAutomaticRetry?: boolean;
 }
 
 /**
@@ -523,11 +525,17 @@ export function paidUseOpenAiError(refusal: PaidUseRefusalLike): OpenAiErrorResp
     // What the paid service called it, when /v1 folds several into one code.
     ...(code !== refusal.code && { reason: refusal.code }),
   };
-  return openAiError(code, {
+  const error = openAiError(code, {
     message: refusal.message,
     ...(refusal.retryAfterSeconds !== undefined && { retryAfterSeconds: refusal.retryAfterSeconds }),
     extra,
   });
+  // A paid run of a workflow whose start found no room AFTER its charge: an
+  // OpenAI SDK sends a rate limit again by itself, and each try would be
+  // another charge and another refund. Only that one refusal says so; the
+  // rows above, and every agent's answer, stay as they are.
+  if (refusal.noAutomaticRetry === true) error.headers["x-should-retry"] = "false";
+  return error;
 }
 
 // ============================================

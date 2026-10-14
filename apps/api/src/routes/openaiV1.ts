@@ -14,6 +14,9 @@
  *   a/<handle>        an agent the caller PAYS to use, by the handle on its
  *                     page: the creator's own agent, never a copy
  *                     (routes/paidCompletions.ts)
+ *   w/<slug>          a workflow the caller PAYS to run, by the slug of its
+ *                     listing: one request is one paid run
+ *                     (routes/paidWorkflowCompletions.ts)
  *   <deployment slug> a running model deployment of the caller's organization
  *                     (routes/inference.ts), billed exactly as on its own URL
  *
@@ -61,6 +64,12 @@ import {
   type PaidCompletionDeps,
 } from "./paidCompletions.js";
 import {
+  createPaidWorkflowCompletionHandler,
+  PAID_WORKFLOW_MODEL_PREFIX,
+  paidWorkflowModelEntry,
+  type PaidWorkflowCompletionDeps,
+} from "./paidWorkflowCompletions.js";
+import {
   createWorkflowCompletionHandler,
   createWorkflowCompletionRoutes,
   workflowModelEntry,
@@ -88,9 +97,15 @@ export interface ListedModels {
   workflows: Array<{ slug: string; createdAt: Date }>;
   /** Other people's agents this organization pays to use, and may use right now. */
   used?: Array<{ handle: string; createdAt: Date }>;
+  /** Other people's workflows this organization pays to run, and may run right now, by their listing's slug. */
+  usedWorkflows?: Array<{ slug: string; createdAt: Date }>;
 }
 
-export interface OpenAiV1Deps extends AgentCompletionDeps, WorkflowCompletionDeps, PaidCompletionDeps {
+export interface OpenAiV1Deps
+  extends AgentCompletionDeps,
+    WorkflowCompletionDeps,
+    PaidCompletionDeps,
+    PaidWorkflowCompletionDeps {
   /**
    * The guard for the unified routes. It does NOT check a scope: which scope
    * a request needs depends on what its `model` names.
@@ -116,6 +131,10 @@ export interface UsedAgentRow {
     pricePerRequestCents: bigint | null;
     /** null when the listing sells a workflow. */
     agent: { publicHandle: string | null } | null;
+    /** The listing's own slug: a buyer's name for a workflow it sells. */
+    slug?: string;
+    /** Set when the listing sells a workflow. */
+    orchestrationId?: string | null;
   };
 }
 
@@ -175,6 +194,41 @@ export function usedAgentsOf(
 }
 
 /**
+ * The workflows an organization may run right now, by the slug of their
+ * listing, from its use licences: the same test the agents above are listed
+ * by. A licence for an agent's listing is not a workflow. Pure.
+ */
+export function usedWorkflowsOf(
+  licences: UsedAgentRow[],
+  subscriptions: UsedSubscriptionRow[],
+  now: Date = new Date(),
+): Array<{ slug: string; createdAt: Date }> {
+  const subs = new Map(subscriptions.map((sub) => [sub.listingId, sub]));
+  const used: Array<{ slug: string; createdAt: Date }> = [];
+  for (const licence of licences) {
+    const { slug, orchestrationId } = licence.listing;
+    if (!orchestrationId || !slug) continue;
+    const access = useAccess(
+      {
+        licence: {
+          kind: licence.kind,
+          status: licence.status,
+          accepted: {
+            pricingModel: licence.acceptedPricingModel,
+            pricePerRequestCents: licence.acceptedPricePerRequestCents,
+          },
+        },
+        listing: licence.listing,
+        sub: subs.get(licence.listingId) ?? null,
+      },
+      now,
+    );
+    if (access === "subscribed" || access === "listing_pricing") used.push({ slug, createdAt: licence.installedAt });
+  }
+  return used;
+}
+
+/**
  * What listing the agents an organization uses reads of its subscriptions.
  * The count and the plan's status are part of it: without them a plan row
  * reads as a month with no count.
@@ -197,7 +251,7 @@ export function usedSubscriptionOf(
   return { ...sub, planRetired: plan?.status === "retired" };
 }
 
-async function usedAgentsFromDb(orgId: string): Promise<Array<{ handle: string; createdAt: Date }>> {
+async function usedFromDb(orgId: string): Promise<Pick<ListedModels, "used" | "usedWorkflows">> {
   const licences = await prisma.agentInstall.findMany({
     where: { buyerId: orgId, kind: "use", status: { in: ["active", "suspended"] } },
     select: {
@@ -214,22 +268,26 @@ async function usedAgentsFromDb(orgId: string): Promise<Array<{ handle: string; 
           pricingModel: true,
           pricePerRequestCents: true,
           agent: { select: { publicHandle: true } },
+          slug: true,
+          orchestrationId: true,
         },
       },
     },
     orderBy: { installedAt: "asc" },
     take: MAX_LISTED_AGENTS,
   });
-  if (licences.length === 0) return [];
-  const subscriptions = await prisma.agentSubscription.findMany({
-    where: { subscriberId: orgId, listingId: { in: licences.map((licence) => licence.listingId) } },
-    select: USED_SUBSCRIPTION_COLUMNS,
-  });
-  return usedAgentsOf(licences, subscriptions.map(usedSubscriptionOf));
+  if (licences.length === 0) return { used: [], usedWorkflows: [] };
+  const subscriptions = (
+    await prisma.agentSubscription.findMany({
+      where: { subscriberId: orgId, listingId: { in: licences.map((licence) => licence.listingId) } },
+      select: USED_SUBSCRIPTION_COLUMNS,
+    })
+  ).map(usedSubscriptionOf);
+  return { used: usedAgentsOf(licences, subscriptions), usedWorkflows: usedWorkflowsOf(licences, subscriptions) };
 }
 
 async function listModelsFromDb(orgId: string): Promise<ListedModels> {
-  const [deployments, agents, workflows, used] = await Promise.all([
+  const [deployments, agents, workflows, { used, usedWorkflows }] = await Promise.all([
     prisma.deployment.findMany({
       where: { orgId, status: "running" },
       select: {
@@ -252,7 +310,7 @@ async function listModelsFromDb(orgId: string): Promise<ListedModels> {
       orderBy: { createdAt: "asc" },
       take: MAX_LISTED_WORKFLOWS,
     }),
-    usedAgentsFromDb(orgId),
+    usedFromDb(orgId),
   ]);
   return {
     deployments: deployments.map((d) => ({
@@ -264,6 +322,7 @@ async function listModelsFromDb(orgId: string): Promise<ListedModels> {
     agents,
     workflows,
     used,
+    usedWorkflows,
   };
 }
 
@@ -271,6 +330,7 @@ export type ModelTarget =
   | { kind: "agent"; slug: string }
   | { kind: "workflow"; slug: string }
   | { kind: "paid"; handle: string }
+  | { kind: "paid_workflow"; slug: string }
   | { kind: "deployment"; slug: string };
 
 /** What a `model` value names. Pure. */
@@ -285,6 +345,11 @@ export function routeModel(model: string): ModelTarget {
   if (model.startsWith(PAID_MODEL_PREFIX)) {
     return { kind: "paid", handle: model.slice(PAID_MODEL_PREFIX.length) };
   }
+  // The same for a workflow on sale; "workflow/" was asked above, and does
+  // not start with "w/".
+  if (model.startsWith(PAID_WORKFLOW_MODEL_PREFIX)) {
+    return { kind: "paid_workflow", slug: model.slice(PAID_WORKFLOW_MODEL_PREFIX.length) };
+  }
   return { kind: "deployment", slug: model };
 }
 
@@ -293,6 +358,7 @@ export function createOpenAiV1Routes(deps: OpenAiV1Deps = {}): FastifyPluginAsyn
   const completeAgent = createAgentCompletionHandler(deps);
   const completeWorkflow = createWorkflowCompletionHandler(deps);
   const completePaid = createPaidCompletionHandler(deps);
+  const completePaidWorkflow = createPaidWorkflowCompletionHandler(deps);
   const listModels = deps.listModels ?? listModelsFromDb;
   let completeDeployment = deps.deploymentCompletion ?? null;
 
@@ -311,7 +377,7 @@ export function createOpenAiV1Routes(deps: OpenAiV1Deps = {}): FastifyPluginAsyn
         schema: {
           tags: ["OpenAI-compatible"],
           description:
-            "OpenAI chat completions on the unified base URL. `model` is 'agent/<slug>', 'workflow/<slug>', 'a/<handle>' for an agent you pay to use, or the slug of a running model deployment.",
+            "OpenAI chat completions on the unified base URL. `model` is 'agent/<slug>', 'workflow/<slug>', 'a/<handle>' for an agent you pay to use, 'w/<slug>' for a workflow you pay to run, or the slug of a running model deployment.",
           security: [{ bearerAuth: [] }],
         },
       },
@@ -362,6 +428,18 @@ export function createOpenAiV1Routes(deps: OpenAiV1Deps = {}): FastifyPluginAsyn
           return completePaid(request, reply, { handle: target.handle, chat: parsed.request });
         }
 
+        if (target.kind === "paid_workflow") {
+          // The scope a key pays for an agent with, and its two spend caps.
+          if (!principalHasScope(request.auth!, AGENTS_USE_SCOPE)) {
+            return replyOpenAiError(reply, "insufficient_scope", {
+              message: `This API key does not have the "${AGENTS_USE_SCOPE}" scope. Create a key with it and both spend caps to pay for workflows.`,
+            });
+          }
+          const parsed = parseChatCompletionRequest(request.body);
+          if (!parsed.ok) return sendOpenAiError(reply, parsed.error);
+          return completePaidWorkflow(request, reply, { slug: target.slug, chat: parsed.request });
+        }
+
         completeDeployment ??= createDeploymentCompletionHandler();
         return completeDeployment(request, reply, { deploymentSlug: target.slug });
       },
@@ -384,9 +462,15 @@ export function createOpenAiV1Routes(deps: OpenAiV1Deps = {}): FastifyPluginAsyn
         // domain that points at a deployment lists its models this way, so its
         // base URL names the one model it serves.
         const only = (request.query as { deployment?: unknown } | undefined)?.deployment;
-        const { deployments, agents, workflows, used } =
+        const { deployments, agents, workflows, used, usedWorkflows } =
           typeof only === "string" && only.length > 0
-            ? { deployments: listed.deployments.filter((d) => d.slug === only), agents: [], workflows: [], used: [] }
+            ? {
+                deployments: listed.deployments.filter((d) => d.slug === only),
+                agents: [],
+                workflows: [],
+                used: [],
+                usedWorkflows: [],
+              }
             : listed;
         return {
           object: "list",
@@ -410,6 +494,7 @@ export function createOpenAiV1Routes(deps: OpenAiV1Deps = {}): FastifyPluginAsyn
             ...agents.map(agentModelEntry),
             ...workflows.map(workflowModelEntry),
             ...(used ?? []).map(paidModelEntry),
+            ...(usedWorkflows ?? []).map(paidWorkflowModelEntry),
           ],
         };
       },

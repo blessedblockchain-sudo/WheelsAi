@@ -109,6 +109,8 @@ import {
 import { playgroundRoutes } from "./routes/playground.js";
 import { createAgentRunRoutesProduction } from "./routes/agentRunBindings.js";
 import { createPaidUseRoutesProduction } from "./routes/paidUseBindings.js";
+import { createPaidWorkflowRoutesProduction } from "./routes/paidWorkflowBindings.js";
+import { cancelInFlightPaidWorkflowRuns } from "./services/buildPaidWorkflowDeps.js";
 import { createAgentPublicLinkRoutesProduction } from "./routes/agentPublicLinkBindings.js";
 import { createAgentScheduleRoutesProduction } from "./routes/agentScheduleBindings.js";
 import { createDestinationsRoutesProduction } from "./routes/destinationsBindings.js";
@@ -509,6 +511,8 @@ async function main() {
   // Paid use of a creator's agent, by the handle on its page:
   // /api/a/:handle/{access,chat,run,results}. Signed in, unlike the page.
   await app.register(createPaidUseRoutesProduction(), { prefix: "/api" });
+  // Paid runs of a workflow on sale, by its listing's slug: /api/w/:slug/...
+  await app.register(createPaidWorkflowRoutesProduction(), { prefix: "/api" });
   await app.register(createAgentListRoutesProduction(), { prefix: "/api/feed" });
   await app.register(createAgentDetailRoutesProduction(), { prefix: "/api/feed" });
 
@@ -639,10 +643,14 @@ async function main() {
       // refused (503) from here on.
       // Agent chats (playground and /v1) hold the same kind of charge and are
       // cancelled in the same window, not after it.
+      // A paid run of a workflow holds a buyer's charge the same way: it is
+      // cancelled in the same window, started first and waited for after.
+      const paidWorkflowRunsDrained = cancelInFlightPaidWorkflowRuns(GRAPH_RUN_DRAIN_MS);
       const [graphRuns, agentChats] = await Promise.all([
         cancelInFlightGraphRuns(GRAPH_RUN_DRAIN_MS),
         cancelInFlightAgentChats(GRAPH_RUN_DRAIN_MS),
       ]);
+      const paidWorkflowRuns = await paidWorkflowRunsDrained;
       if (graphRuns.cancelled > 0) {
         app.log[graphRuns.unfinished > 0 ? "error" : "info"](
           graphRuns,
@@ -653,6 +661,12 @@ async function main() {
         app.log[agentChats.unfinished > 0 ? "error" : "info"](
           agentChats,
           "Cancelled in-flight agent chats for shutdown",
+        );
+      }
+      if (paidWorkflowRuns.cancelled > 0) {
+        app.log[paidWorkflowRuns.unfinished > 0 ? "error" : "info"](
+          paidWorkflowRuns,
+          "Cancelled in-flight paid workflow runs for shutdown",
         );
       }
       await stopX402Queue();

@@ -82,6 +82,46 @@ test("paid use of someone else's agent is not one of the caller's own API calls"
   }
 });
 
+test("a paid run of someone else's workflow is not one of the caller's own API calls; the owner's own workflow call is", () => {
+  const PAID_WORKFLOW_BODY = { model: "w/launch-brief", messages: [{ role: "user", content: "Hi" }] };
+  for (const authType of ["api_key", "jwt"] as const) {
+    for (const url of ["/api/w/launch-brief/run", "/api/w/launch-brief/run?x=/y"]) {
+      assert.equal(countsAsApiCall({ authType, method: "POST", url, body: {} }), false, `${authType} ${url}`);
+      assert.equal(countsAsApiCall({ authType, method: "post", url, body: undefined }), false, `${authType} ${url}`);
+    }
+    for (const url of ["/v1/chat/completions", "/v1/chat/completions?x=1"]) {
+      assert.equal(countsAsApiCall({ authType, method: "POST", url, body: PAID_WORKFLOW_BODY }), false, `${authType} ${url}`);
+    }
+    // The owner's own `workflow/<slug>` starts with neither paid prefix: counted.
+    assert.equal(
+      countsAsApiCall({ authType, method: "POST", url: "/v1/chat/completions", body: { model: "workflow/launch-brief" } }),
+      true,
+      authType,
+    );
+  }
+  // A path that only looks like a paid run is counted.
+  for (const url of [
+    "/api/w/x/run/",
+    "/api/w/x/run/extra",
+    "/api/w/x/chat",
+    "/api/w//run",
+    "/api/w/x/y/run",
+    "/api/W/x/run",
+    "/api/workflows/x/run",
+    "/api/w/x/access",
+    "/v1/workflows/x/chat/completions",
+  ]) {
+    assert.equal(countsAsApiCall({ authType: "api_key", method: "POST", url, body: PAID_WORKFLOW_BODY }), true, url);
+  }
+  for (const model of ["W/x", " w/x", "wf/x", "w"]) {
+    assert.equal(
+      countsAsApiCall({ authType: "api_key", method: "POST", url: "/v1/chat/completions", body: { model } }),
+      true,
+      model,
+    );
+  }
+});
+
 test("everything else on /v1 is counted as before, whatever it is named", () => {
   const url = "/v1/chat/completions";
   for (const model of ["agent/support-bot", "workflow/a", "llama-prod", "a", "A/support-bot", " a/support-bot", "agent/a/x", ""]) {

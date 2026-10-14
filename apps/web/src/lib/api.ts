@@ -900,8 +900,16 @@ export interface MarketplaceUsageRow {
   /** The agent's page, /a/<handle>. Null when it has none. */
   handle: string | null;
   access: MarketplaceInstallAccess;
+  /** True only when `access` is plan_ended and what ended was the buyer's own free trial. Absent from an API that does not say. */
+  trialEnded?: boolean;
   /** The plan the buyer is on, while it gives uses. Null otherwise. */
   plan: PaidUsePlan | null;
+  /**
+   * On a running free trial: what each use costs once the free uses are gone, charged without asking
+   * again (the listing's price per use, for a buyer who agreed to it). Null when such a use is not
+   * charged, and on every row that is not on a trial. Absent from an API that does not say.
+   */
+  perUseAfterTrial?: { priceCents: number; unit: "message" | "run" } | null;
   /**
    * On a plan: the end of the 30 days paid for (an ISO time), said as the day the plan ends when it
    * will not renew (`plan.resetsAt` is then left out). Null with no plan.
@@ -3369,6 +3377,8 @@ export const marketplaceApi = {
         totalSpentCents: number;
         installedAt: string;
         access: MarketplaceInstallAccess;
+        /** True only when `access` is plan_ended and what ended was the buyer's own free trial. Absent from an API that does not say. */
+        trialEnded?: boolean;
         acceptedPricing: MarketplaceAcceptedPricing;
         listing: MarketplaceListing;
         subscription: MarketplaceSubscription | null;

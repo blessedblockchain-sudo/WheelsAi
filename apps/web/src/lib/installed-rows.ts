@@ -52,6 +52,8 @@ export interface InstalledLicence {
   totalSpentCents: number;
   installedAt: string;
   access: MarketplaceInstallAccess;
+  /** The API's word that what ended was the buyer's own free trial. Absent from an API that does not say. */
+  trialEnded?: boolean;
   acceptedPricing: MarketplaceAcceptedPricing;
   listing: MarketplaceListing;
   subscription: MarketplaceSubscription | null;
@@ -359,12 +361,13 @@ function sellsUseNow(install: InstalledLicence): boolean {
 }
 
 /**
- * Whether the plan that is over on this row was the listing's free trial. A
- * trial is the one row with a count of uses that was agreed at no price, the
- * mark the API tells a trial by.
+ * Whether the plan that is over on this row was the listing's free trial.
+ * The API says so itself (`trialEnded`), by the one rule it tells a trial
+ * by. Nothing is inferred here: a row the API said nothing about is a plan
+ * that ended.
  */
 function trialEnded(install: InstalledLicence): boolean {
-  return install.access === "plan_ended" && install.subscription?.priceCents === 0;
+  return install.access === "plan_ended" && install.trialEnded === true;
 }
 
 /** What an acceptance of the listing's pricing would agree to; null when it names no price. */

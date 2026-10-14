@@ -24,7 +24,7 @@
  */
 import type { MarketplaceUsage, MarketplaceUsageRow, UsesAndCents } from "./api";
 import { INSTALLED_WORDS } from "./installed-rows";
-import { dollars } from "./paid-use";
+import { dollars, type PaidPrice } from "./paid-use";
 import { TRIAL_WORDS, planCountLine, planCountOf, trialCountLine, type PlanCount } from "./use-plans";
 
 // ---------------------------------------------------------------------------
@@ -166,6 +166,21 @@ export function perUseLine(sum: UsesAndCents): string {
   return `${usesWord(sum.uses)} paid per use this month: ${dollars(sum.cents)}.`;
 }
 
+/**
+ * What a use past a trial's uses costs this buyer, as the API said it: a
+ * price, null (the trial stops and they choose), or undefined when the API
+ * did not say or what it sent cannot be read. Nothing is guessed from it.
+ */
+function perUseAfterTrial(row: MarketplaceUsageRow): PaidPrice | null | undefined {
+  const said = row.perUseAfterTrial;
+  if (said === null) return null;
+  if (typeof said !== "object") return undefined;
+  const { priceCents, unit } = said;
+  if (!Number.isSafeInteger(priceCents) || priceCents <= 0) return undefined;
+  if (unit !== "message" && unit !== "run") return undefined;
+  return { model: "per_request", cents: priceCents, unit };
+}
+
 /** One row of the page. A row with no plan shows only what it has. */
 export function usageRow(row: MarketplaceUsageRow): UsageRowView {
   const count = row.access === "subscribed" ? planCountOf(row.plan) : null;
@@ -178,10 +193,12 @@ export function usageRow(row: MarketplaceUsageRow): UsageRowView {
   };
 
   if (!count || !row.plan) {
-    // A plan that is over is said as Installed says it. A month with no count is said as one, so
+    // A plan that is over is said as Installed says it, and a free trial that is over by its own
+    // sentence when the API says that is what ended. A month with no count is said as one, so
     // nobody who pays by the month reads that nothing was paid. A plan whose count could not be
     // read says nothing. Any other row with nothing paid says so.
-    const ended = row.access === "plan_ended" ? INSTALLED_WORDS.planEnded : null;
+    const over = row.trialEnded === true ? INSTALLED_WORDS.trialEnded : INSTALLED_WORDS.planEnded;
+    const ended = row.access === "plan_ended" ? over : null;
     const subscribed = row.access === "subscribed";
     const monthly = subscribed && !row.plan ? USAGE_WORDS.paidMonthly : null;
     const nothing = subscribed || perUse ? null : USAGE_WORDS.nothingPerUse;
@@ -199,14 +216,21 @@ export function usageRow(row: MarketplaceUsageRow): UsageRowView {
 
   const extra = spent(row.extraThisPeriod);
   if (row.plan.trial === true) {
-    // A free trial has one name everywhere, and no renewal to be retried or to wait for. What the buyer
-    // agreed to per use is not in this read, so when the uses are gone the line says that and no more.
+    // A free trial has one name everywhere, and no renewal to be retried or to wait for. When its uses
+    // are gone the line says what comes next from the API's own word: the price each use now costs a
+    // buyer who agreed to it, or that they choose. Without that word it says only that the uses are gone.
+    const perUse = perUseAfterTrial(row);
     return {
       ...base,
       planName: TRIAL_WORDS.name,
       bar: usageBar(count, TRIAL_WORDS.name),
       renewalLine: null,
-      countLine: trialCountLine({ plan: count, endsAt: row.periodEndsAt, dates: { timeZone: PLAN_DAY_ZONE } }),
+      countLine: trialCountLine({
+        plan: count,
+        endsAt: row.periodEndsAt,
+        ...(perUse === undefined ? {} : { perUse }),
+        dates: { timeZone: PLAN_DAY_ZONE },
+      }),
       // From 85% used the bar says so at its warning level, and the line beside it takes the same tone.
       countTone: count.remainingUses > 0 && count.warning === null ? "ok" : "warn",
       // The trial's own uses are never extra ones. Uses past them are charged only to a buyer who agreed

@@ -244,6 +244,26 @@ test("a plan that is over is said as Installed says it", () => {
   assert.equal(since.perUseLine, "2 uses paid per use this month: $0.10.");
 });
 
+test("a free trial that is over is said as one, from the API's word and nothing else", () => {
+  const view = usageRow(perUseRow({ access: "plan_ended", trialEnded: true }));
+  assert.equal(view.statusLine, "Your free trial ended. Choose a plan or pay per use to keep using it.");
+  assert.equal(view.statusLine, INSTALLED_WORDS.trialEnded);
+  assert.equal(view.bar, null);
+  assert.equal(view.planName, null);
+  // The API says it was no trial: a plan that ended.
+  assert.equal(usageRow(perUseRow({ access: "plan_ended", trialEnded: false })).statusLine, INSTALLED_WORDS.planEnded);
+  // Only the API's own true counts. Anything else that merely reads as true is a plan that ended.
+  for (const word of ["true", 1, {}]) {
+    const said = perUseRow({ access: "plan_ended", trialEnded: word as unknown as boolean });
+    assert.equal(usageRow(said).statusLine, INSTALLED_WORDS.planEnded, String(word));
+  }
+  // The word counts only beside a plan that is over: every other row is what it was.
+  for (const access of ["listing_pricing", "subscription_lapsed", "pricing_changed", "not_offered"] as const) {
+    assert.deepEqual(usageRow(perUseRow({ access, trialEnded: true })), usageRow(perUseRow({ access })), access);
+  }
+  assert.deepEqual(usageRow(row({ trialEnded: true })), usageRow(row()));
+});
+
 test("a plan is drawn only while it gives uses, and only when its count can be read", () => {
   // The API names a plan only while the access is subscribed; anything else is not drawn as one.
   assert.equal(usageRow(row({ access: "pricing_changed" })).bar, null);
@@ -359,7 +379,7 @@ test("a trial's row is named Free trial and its line is the trial's count, with 
 test("a trial whose uses are gone says so; what was charged past it is never left out", () => {
   const gone = { usedUses: 20, remainingUses: 0, warning: 100 as const };
   const view = usageRow(trialRow({}, gone));
-  // This read does not say what the buyer agreed to per use, so the line does not guess what comes next.
+  // An API that does not say what a use costs next: the line does not guess what comes next.
   assert.equal(view.countLine, "You have used all 20 uses of your free trial.");
   assert.equal(view.countTone, "warn");
   assert.equal(view.bar?.levelLabel, USAGE_WORDS.level100);
@@ -368,6 +388,49 @@ test("a trial whose uses are gone says so; what was charged past it is never lef
   const paid = usageRow(trialRow({ extraThisPeriod: { uses: 3, cents: 15 } }, gone));
   assert.equal(paid.extraLine, "3 extra uses this period: $0.15.");
   assert.equal(paid.countLine, "You have used all 20 uses of your free trial.");
+});
+
+test("a trial whose uses are gone says what comes next, from what the API said a use now costs", () => {
+  const gone = { usedUses: 20, remainingUses: 0, warning: 100 as const };
+  const line = (perUseAfterTrial: unknown) =>
+    usageRow(trialRow({ perUseAfterTrial } as Partial<MarketplaceUsageRow>, gone)).countLine;
+  const USED = "You have used all 20 uses of your free trial.";
+
+  // A buyer who agreed to the price per use: each use is now charged, and the line says the price.
+  assert.equal(line({ priceCents: 5, unit: "message" }), `${USED} Each message is now $0.05 from your credits.`);
+  assert.equal(line({ priceCents: 250, unit: "run" }), `${USED} Each run is now $2.50 from your credits.`);
+  // The API says no use is charged: the buyer chooses.
+  assert.equal(line(null), `${USED} Choose a plan or pay per use to keep using it.`);
+  // Anything that is not a whole price above nothing for a message or a run is not repeated, and is
+  // not read as "choose" either: the line says only that the uses are gone.
+  for (const odd of [
+    { priceCents: 0, unit: "message" },
+    { priceCents: -5, unit: "message" },
+    { priceCents: 2.5, unit: "message" },
+    { priceCents: "5", unit: "message" },
+    { priceCents: 5, unit: "month" },
+    { priceCents: 5 },
+    { unit: "run" },
+    "5",
+    5,
+    true,
+  ]) {
+    assert.equal(line(odd), USED, JSON.stringify(odd));
+  }
+
+  // With uses left the line is the count, whatever a use costs afterwards.
+  const left = "12 of 20 trial uses left. Your free trial ends on 20 Oct.";
+  assert.equal(usageRow(trialRow({ perUseAfterTrial: { priceCents: 5, unit: "message" } })).countLine, left);
+  assert.equal(usageRow(trialRow({ perUseAfterTrial: null })).countLine, left);
+  // Nothing else of the row moves with it.
+  const { countLine: _a, ...withPrice } = usageRow(trialRow({ perUseAfterTrial: { priceCents: 5, unit: "message" } }, gone));
+  const { countLine: _b, ...without } = usageRow(trialRow({}, gone));
+  assert.deepEqual(withPrice, without);
+  // A paid plan never reads it.
+  assert.deepEqual(
+    usageRow(row({ perUseAfterTrial: { priceCents: 5, unit: "message" } })),
+    usageRow(row()),
+  );
 });
 
 test("a paid plan's row is what it was, whether or not the API says it is not a trial", () => {

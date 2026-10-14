@@ -835,6 +835,7 @@ test("a trial whose uses are gone: asked to choose, or told the price agreed to,
 test("after a trial ended the row says so in the trial's words and links to the agent's page; a paid plan keeps its own", () => {
   const ended = trialRow({
     access: "plan_ended",
+    trialEnded: true,
     subscription: sub({ status: "expired", hasAccess: false, priceCents: 0, cancelAtPeriodEnd: true, plan: null }),
   });
   const row = installedRow(ended, FMT);
@@ -842,11 +843,30 @@ test("after a trial ended the row says so in the trial's words and links to the 
   assert.deepEqual(row.line, { text: INSTALLED_WORDS.trialEnded, tone: "bad" });
   assert.equal(row.openHref, "/a/support-bot");
   assert.deepEqual(labels(row), ["Open", "View Listing", "Write Review", "Stop using"]);
-  // A paid plan that ended, and a row whose price was never told.
+  // A paid plan that ended, and a row whose price was never told: the API says it was no trial.
   for (const priceCents of [900, null]) {
-    const paid = trialRow({ access: "plan_ended", subscription: sub({ status: "expired", hasAccess: false, priceCents, plan: null }) });
+    const paid = trialRow({
+      access: "plan_ended",
+      trialEnded: false,
+      subscription: sub({ status: "expired", hasAccess: false, priceCents, plan: null }),
+    });
     assert.deepEqual(installedRow(paid, FMT).line, { text: INSTALLED_WORDS.planEnded, tone: "bad" });
   }
+  // The API's word is the one rule. A price of nothing with no word from the API is a plan that
+  // ended, and so is one the API says was no trial: nothing is inferred from the price.
+  for (const word of [{}, { trialEnded: false }]) {
+    const unsaid = { ...ended, ...word };
+    if (!("trialEnded" in word)) delete unsaid.trialEnded;
+    assert.equal(unsaid.subscription?.priceCents, 0);
+    assert.deepEqual(installedRow(unsaid, FMT).line, { text: INSTALLED_WORDS.planEnded, tone: "bad" });
+  }
+  // Only the API's own true counts. Anything else that merely reads as true is a plan that ended.
+  for (const word of ["true", 1, {}]) {
+    const loose = { ...ended, trialEnded: word as unknown as boolean };
+    assert.deepEqual(installedRow(loose, FMT).line, { text: INSTALLED_WORDS.planEnded, tone: "bad" }, String(word));
+  }
+  // The word counts only beside a plan that is over: on a running trial it changes nothing.
+  assert.deepEqual(installedRow(trialRow({ trialEnded: true }), FMT), installedRow(trialRow(), FMT));
   // No longer offered wins, as for any plan that is over.
   const gone = installedRow({ ...ended, listing: listing({ status: "archived" }) }, FMT);
   assert.equal(gone.line?.text, INSTALLED_WORDS.notOffered);

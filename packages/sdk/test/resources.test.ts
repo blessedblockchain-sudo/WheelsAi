@@ -674,6 +674,32 @@ describe("selling and using an agent", () => {
     assert.deepEqual(calls[1]!.body, { sells: "use", allowedTools: [] });
   });
 
+  it("create and update send the switch for paying from a wallet, and the owner's reads say it", async () => {
+    const { fetch, calls } = recordingFetch(() => jsonResponse({ listing: { id: LISTING, x402Enabled: true } }, 201));
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch });
+    const input = { ...listingInput, x402Enabled: true };
+    const { listing } = await wheels.marketplace.createListing(input);
+    await wheels.marketplace.updateListing(LISTING, { x402Enabled: false });
+    assert.deepEqual(calls[0]!.body, input);
+    assert.deepEqual(calls[1]!.body, { x402Enabled: false });
+    const saved: boolean | undefined = listing.x402Enabled;
+    assert.equal(saved, true);
+    // Left out, nothing is sent: an update leaves the switch as it is.
+    await wheels.marketplace.updateListing(LISTING, { pricePerRequestCents: 10 });
+    assert.equal("x402Enabled" in (calls[2]!.body as object), false);
+    // The API takes the field, and only the owner's reads carry it.
+    const apiSource = (path: string) => readFileSync(new URL(`../../../../apps/api/src/${path}`, import.meta.url), "utf8");
+    assert.match(apiSource("routes/marketplace.ts"), /x402Enabled: z\.boolean\(\)\.optional\(\),/);
+    const marketplace = apiSource("services/marketplace.ts");
+    assert.match(marketplace, /function formatListingForOwner\(listing: any\) \{[\s\S]*?x402Enabled: listing\.x402Enabled === true,/);
+    const publicStart = marketplace.indexOf("function formatListingForPublic(");
+    const publicRead = marketplace.slice(publicStart, marketplace.indexOf("\n}\n", publicStart));
+    assert.ok(publicRead.length > 0);
+    assert.doesNotMatch(publicRead, /x402Enabled/);
+    // The floor the doc comment names.
+    assert.match(apiSource("services/useListing.ts"), /MIN_PRICE_PER_USE_CENTS = 5n;/);
+  });
+
   it("startUsing sends the price it was shown, and acceptNewPricing only when asked", async () => {
     const { fetch, calls } = recordingFetch();
     const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch });
@@ -1311,6 +1337,8 @@ describe("a workflow on sale", () => {
       { orchestrationId: WORKFLOW, title: "x", shortDescription: "y", category: "other", pricingModel: "monthly", monthlyPriceCents: 900 },
       // @ts-expect-error a workflow is sold by use, never as copies
       { orchestrationId: WORKFLOW, title: "x", shortDescription: "y", category: "other", pricingModel: "per_request", pricePerRequestCents: 5, sells: "copies" },
+      // @ts-expect-error a workflow is not paid from a wallet
+      { orchestrationId: WORKFLOW, title: "x", shortDescription: "y", category: "other", pricingModel: "per_request", pricePerRequestCents: 5, x402Enabled: true },
     ];
     assert.equal(typeof notSent, "function");
     // The API takes exactly one of the two, and says so in one sentence.

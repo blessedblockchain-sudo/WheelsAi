@@ -178,7 +178,10 @@ same agent answers `inference.chat({ model: "a/refund-helper", ... })`. While th
 is not running the agent is paused: `use.access` says `paused: true`, `marketplace.startUsing` answers
 409 `listing_paused`, and `use.chat` and `use.run` answer 503 `agent_paused`. Nothing is charged, and a
 month already paid for is made longer by that time. To sell, `marketplace.createListing`
-takes `sells` (`"use"` by default, or `"copies"`), `allowedTools` and `publish`.
+takes `sells` (`"use"` by default, or `"copies"`), `allowedTools`, `x402Enabled` and `publish`.
+`x402Enabled: true` lets people with no account pay each use from a Solana wallet, in USDC, with
+an x402 client: only on an agent sold per use at 5 cents or more that answers when it is called,
+and a change away from pay per use turns it off.
 
 A workflow someone sells is used the same way, by the slug of its listing, with `use.workflow`:
 

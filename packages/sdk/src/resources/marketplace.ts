@@ -190,6 +190,14 @@ export interface AgentListing {
   hasToken?: boolean;
   /** Your own listings only (create, update, `myListings`): the tools the agent may use for people who pay. */
   allowedTools?: string[];
+  /**
+   * Your own listings only (create, update, `myListings`, and the stored row of `publishListing` and
+   * `archiveListing`): whether people with no account may pay each use from a Solana wallet (the x402
+   * door). A read anyone can make does not carry it. Whether the door is open right now is
+   * `x402.available` in `GET /api/capabilities`, and whether it takes this agent is the `x402` of
+   * `GET /api/a/{handle}/api`.
+   */
+  x402Enabled?: boolean;
   /** `myListings` only: how many people have a copy, use it, or are subscribed. */
   buyers?: { copies: number; using: number; subscribed: number };
   /**
@@ -404,6 +412,16 @@ interface ListingFields {
   sells?: ListingSells;
   /** Skill keys (such as `http_request`) the agent may use for people who pay; at most 50. */
   allowedTools?: string[];
+  /**
+   * `true` lets people with no account pay each use from a Solana wallet, in USDC, with an x402 client.
+   * Only on an agent's listing that sells `use`, `per_request`, at 5 cents or more, for an agent that
+   * answers when it is called (a conversation or a task agent); otherwise 400 `validation_failed` on
+   * `x402Enabled`, and nothing is saved. Left out, a new listing has it off and an update leaves it as it
+   * is, except that an update moving the listing away from use per request (free, monthly, tokenized or
+   * copies) turns it off in the same write: read it back from the answer. `false` is always taken. It is
+   * saved whether or not the platform offers paying from a wallet right now.
+   */
+  x402Enabled?: boolean;
   /** Publish in the same request. */
   publish?: boolean;
 }
@@ -421,10 +439,11 @@ export interface CreateAgentListingInput extends ListingFields {
  * have a step, use only agents its organization built, and have a time limit of 10 minutes or less (the
  * capabilities' `paidUse.paidWorkflowMaxRunMs`), or the create answers 409 `workflow_not_sellable` with the
  * reason. Refused on their field (400 `validation_failed`): `sells: "copies"`, any other pricing model, a
- * price under 5, any `allowedTools`, and a title with no letter or digit. 409 `listing_exists` when the
- * workflow already has a listing; 404 `workflow_not_found` when it is not one of the caller's.
+ * price under 5, any `allowedTools`, `x402Enabled: true` (a workflow is not paid from a wallet), and a title
+ * with no letter or digit. 409 `listing_exists` when the workflow already has a listing; 404
+ * `workflow_not_found` when it is not one of the caller's.
  */
-export interface CreateWorkflowListingInput extends Omit<ListingFields, "pricingModel" | "pricePerRequestCents" | "monthlyPriceCents" | "sells" | "allowedTools"> {
+export interface CreateWorkflowListingInput extends Omit<ListingFields, "pricingModel" | "pricePerRequestCents" | "monthlyPriceCents" | "sells" | "allowedTools" | "x402Enabled"> {
   /** The workflow to list. Must belong to the caller's organization and have no listing yet. */
   orchestrationId: string;
   agentId?: never;
@@ -440,7 +459,7 @@ export type CreateListingInput = CreateAgentListingInput | CreateWorkflowListing
 
 /**
  * A change never names what a listing sells. On a workflow's listing the price per run, the words and the
- * category change; the same refusals as at a create apply.
+ * category change; the same refusals as at a create apply, `x402Enabled: true` among them.
  */
 export type UpdateListingInput = Partial<ListingFields>;
 

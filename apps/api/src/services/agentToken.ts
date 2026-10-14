@@ -20,6 +20,25 @@ import {
 
 const logger = createLogger("agent-token-service");
 
+/**
+ * The columns of a token's listing that a token read sends. These reads are
+ * public (GET /api/tokens, /trending and /:id), so they name the columns the
+ * token pages show and never send the whole row: the row also holds what
+ * only its owner reads, such as the switch for paying from a wallet, the
+ * tools a buyer may use and when the listing was paused.
+ */
+const TOKEN_LISTING_COLUMNS = {
+  select: {
+    id: true,
+    title: true,
+    slug: true,
+    avgRating: true,
+    totalInstalls: true,
+    totalRequests: true,
+    category: true,
+  },
+} as const;
+
 // ============================================
 // Types
 // ============================================
@@ -431,7 +450,7 @@ export async function createToken(
         treasuryAddress: treasuryPda.toBase58(),
       },
       include: {
-        agentListing: true,
+        agentListing: TOKEN_LISTING_COLUMNS,
       },
     });
     await tx.agentTreasury.create({
@@ -469,7 +488,7 @@ export async function getToken(id: string) {
   return prisma.agentToken.findUnique({
     where: { id },
     include: {
-      agentListing: true,
+      agentListing: TOKEN_LISTING_COLUMNS,
     },
   });
 }
@@ -481,7 +500,7 @@ export async function getTokenByMint(mintAddress: string) {
   return prisma.agentToken.findUnique({
     where: { mintAddress },
     include: {
-      agentListing: true,
+      agentListing: TOKEN_LISTING_COLUMNS,
     },
   });
 }
@@ -540,7 +559,7 @@ export async function listTokens(params: ListTokensParams = {}) {
       skip,
       take: limit,
       include: {
-        agentListing: true,
+        agentListing: TOKEN_LISTING_COLUMNS,
       },
     }),
     prisma.agentToken.count({ where }),
@@ -557,7 +576,7 @@ export async function getTrendingTokens(limit = 10) {
     orderBy: { volume24h: "desc" },
     take: limit,
     include: {
-      agentListing: true,
+      agentListing: TOKEN_LISTING_COLUMNS,
     },
   });
 }

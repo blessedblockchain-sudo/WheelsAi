@@ -179,9 +179,11 @@ test("the run cap is counted and the row inserted under one org lock, in one tra
   );
   assert.match(calls[1]!.args.sql, /pg_advisory_xact_lock\(hashtext\(\?\)\)/);
   assert.deepEqual(calls[1]!.args.values, ["workflow-runs:org-1"]);
+  // A buyer's paid runs are not the organization's own: they have their own bound.
   assert.deepEqual(calls[2]!.args.where, {
     status: { in: ["queued", "running"] },
     orchestration: { orgId: "org-1" },
+    triggeredBy: { not: "paid" },
   });
   const data = calls[3]!.args.data;
   assert.equal(data.status, "queued");

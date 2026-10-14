@@ -33,6 +33,7 @@ import type {
   WorkflowExecutionJobDeps,
 } from "./runWorkflowExecutionJob.js";
 import type { NewRunRow, QueuedRun, StartWorkflowRunDeps } from "./startWorkflowRun.js";
+import { PAID_WORKFLOW_TRIGGER } from "./workflowListing.js";
 import {
   validateWorkflowDefinition,
   type LoadOwnership,
@@ -52,7 +53,11 @@ interface ExecutionDelegateStub {
     include?: Record<string, unknown>;
   }) => Promise<unknown>;
   count: (args: {
-    where: { status: { in: string[] }; orchestration: { orgId: string } };
+    where:
+      // The organization's own runs, a buyer's paid runs left out (createQueuedRun).
+      | { status: { in: string[] }; orchestration: { orgId: string }; triggeredBy: { not: string } }
+      // A workflow's paid runs (createPaidQueuedRun).
+      | { orchestrationId: string; triggeredBy: string; status: { in: string[] } };
   }) => Promise<number>;
   create: (args: {
     data: Record<string, unknown>;
@@ -177,10 +182,15 @@ export function buildStartWorkflowRunDeps(input: {
         // requests could both count N-1 active runs and both insert.
         // Released when the transaction ends.
         await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`workflow-runs:${row.orgId}`}))::text`;
+        // The organization's own runs. A buyer's paid runs of a workflow on
+        // sale are bounded by that workflow's own number (createPaidQueuedRun)
+        // and are not counted here, so buyers never keep its creator from
+        // running their own work.
         const active = await tx.orchestrationExecution.count({
           where: {
             status: { in: [...ACTIVE_RUN_STATUSES] },
             orchestration: { orgId: row.orgId },
+            triggeredBy: { not: PAID_WORKFLOW_TRIGGER },
           },
         });
         if (active >= maxActive) return null;
@@ -214,6 +224,55 @@ export function buildStartWorkflowRunDeps(input: {
       });
     },
   };
+}
+
+/**
+ * The row of a PAID run of a workflow on sale (services/paidWorkflow.ts), in
+ * place of createQueuedRun. Under the same lock that orders an
+ * organization's starts, it counts the runs of THIS workflow that a buyer
+ * paid for and that are queued or running, and creates the row only while
+ * there are fewer than `maxActive`: two buyers who both read a free place
+ * cannot both take it. null = no room, and no row.
+ *
+ * The organization's own cap on its runs is not asked: what bounds a paid
+ * run is the workflow's own number. The cap's argument is ignored.
+ */
+export function createPaidQueuedRun(
+  prismaSurface: WorkflowRunPrismaSurface,
+  maxActive: number,
+): StartWorkflowRunDeps["createQueuedRun"] {
+  const prisma = stub(prismaSurface);
+  return (row: NewRunRow) =>
+    prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`workflow-runs:${row.orgId}`}))::text`;
+      const active = await tx.orchestrationExecution.count({
+        where: {
+          orchestrationId: row.orchestrationId,
+          triggeredBy: PAID_WORKFLOW_TRIGGER,
+          status: { in: [...ACTIVE_RUN_STATUSES] },
+        },
+      });
+      if (active >= maxActive) return null;
+      return tx.orchestrationExecution.create({
+        data: {
+          orchestrationId: row.orchestrationId,
+          status: "queued",
+          input: row.input,
+          triggeredBy: row.triggeredBy,
+          triggeredById: row.triggeredById,
+          scheduledTaskId: row.scheduledTaskId,
+          taskExecutionId: row.taskExecutionId,
+          jobId: row.jobId,
+        },
+        select: {
+          id: true,
+          status: true,
+          triggeredBy: true,
+          triggeredById: true,
+          createdAt: true,
+        },
+      });
+    });
 }
 
 interface StoredRun {

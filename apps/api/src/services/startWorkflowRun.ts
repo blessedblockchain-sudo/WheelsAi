@@ -28,7 +28,8 @@
 import { WorkflowError } from "./workflowErrors.js";
 import { checkAgainstSchema } from "./workflowSchemaCheck.js";
 
-export type WorkflowTrigger = "manual" | "api" | "schedule" | "job";
+/** Who started a run. "paid": a buyer of the workflow on sale (services/paidWorkflow.ts); never a name of who. */
+export type WorkflowTrigger = "manual" | "api" | "schedule" | "job" | "paid";
 
 export interface StartWorkflowRunArgs {
   orchestrationId: string;

@@ -2444,14 +2444,29 @@ export interface PlanOffer {
 }
 
 /**
+ * The free trial a listing offers beside its plans, as a buyer is shown it: some uses for some days, at
+ * no price. An organization starts it once, ever, with `startPlan` and the terms
+ * `{ id, priceCents: 0, includedUses, extraUsePriceCents: null }`.
+ */
+export interface TrialOffer {
+  id: string;
+  includedUses: number;
+  /** How many days it lasts from its start. */
+  days: number;
+}
+
+/**
  * The terms of a plan as the buyer was shown them. Sent back when they start it, they are the
  * buyer's consent. `extraUsePriceCents` is always sent, null for a plan that stops.
  */
 export type PlanTerms = Pick<PlanOffer, "id" | "priceCents" | "includedUses" | "extraUsePriceCents">;
 
-/** A plan as its creator sees it (`getMyListings` and `setListingPlans`). No buyer is named. */
+/**
+ * A plan as its creator sees it (`getMyListings` and `setListingPlans`). No buyer is named. The
+ * listing's free trial is one of them: kind "trial", always named "Free trial", price 0, no extra price.
+ */
 export interface ListingPlan extends PlanOffer {
-  kind: "paid" | (string & {});
+  kind: "paid" | "trial" | (string & {});
   status: "active" | (string & {});
   /** How many people are on this plan now. */
   subscribers: number;
@@ -2469,8 +2484,10 @@ export interface OwnedMarketplaceListing extends MarketplaceListing {
  */
 export interface ListingPlanInput {
   id?: string;
-  kind: "paid";
-  name: string;
+  /** "trial" is the listing's one free trial: price 0, no extra price, and no name of its own. */
+  kind: "paid" | "trial";
+  /** Left out for a trial, which is always called "Free trial". */
+  name?: string;
   priceCents: number;
   includedUses: number;
   extraUsePriceCents: number | null;
@@ -2506,6 +2523,8 @@ export interface MarketplaceListing {
    * gives the owner's view of them (`OwnedMarketplaceListing`). Absent from the other reads.
    */
   plans?: PlanOffer[];
+  /** The read of one listing (`getListing`): the free trial it offers, or null. Absent from the other reads. */
+  freeTrial?: TrialOffer | null;
   /**
    * The search, the featured row and a publisher's listings: the smallest price among the plans the
    * listing offers, in cents; null when it offers none.
@@ -2620,6 +2639,8 @@ export interface PublicAgentPaidTerms {
    * a listing sold by the month and for one with no plan. Absent from an API that does not say.
    */
   plans?: PlanOffer[];
+  /** The free trial the listing offers beside its plans, or null. Absent from an API that does not say. */
+  trial?: TrialOffer | null;
 }
 
 /** Exactly one of `chat`, `task` and `scheduled` is present, the one of the agent's kind. */
@@ -2733,6 +2754,8 @@ export interface AgentApiPage {
   priceCents: number;
   /** The plans on offer, in the order they are shown. Empty when the listing offers none. */
   plans: PlanOffer[];
+  /** The free trial on offer beside the plans, or null. Absent from an API that does not say. */
+  trial?: TrialOffer | null;
   /** What one buyer may send. `perDayWithoutPlan` holds a buyer on no plan; a plan's holder is held to its count. */
   limits: { perMinute: number; perDayWithoutPlan: number };
   /** The names of the usage headers: on every paid answer, and the ones an answer on a plan adds. */
@@ -2829,6 +2852,11 @@ export interface PaidUsePlan {
   name: string;
   includedUses: number;
   /**
+   * True on the listing's free trial: its uses cost nothing, it never renews, and its name is
+   * "Free trial". Absent from an API that does not say.
+   */
+  trial?: boolean;
+  /**
    * Uses brought into this period by a move to a bigger plan: the period holds `includedUses` plus
    * these, and `remainingUses` counts both. Absent from an API that does not say.
    */
@@ -2853,8 +2881,17 @@ export interface PaidUseAccessState {
   plans?: PlanOffer[];
   /** The plan the caller is on, while it gives them uses. Null, or absent, otherwise. */
   plan?: PaidUsePlan | null;
-  /** Whether the caller can start a free trial. Free trials are not offered yet, so this is false. */
+  /** The free trial the listing offers now, or null. Absent from an API that does not say. */
+  trial?: TrialOffer | null;
+  /**
+   * Whether the caller's organization can start that trial now: it never started one on this listing,
+   * has no plan or paid month running on it, and has added credits at least once.
+   */
   trialAvailable?: boolean;
+  /** True when adding credits once is the only thing missing for the trial. */
+  trialNeedsCredits?: boolean;
+  /** True when access is `plan_ended` and what ended was the caller's own free trial. */
+  trialEnded?: boolean;
   /** What the caller agreed to; null when they have not started. */
   accepted: { pricingModel: string | null; pricePerRequestCents: number | null; monthlyPriceCents: number | null } | null;
   /**
@@ -2887,8 +2924,13 @@ export interface PaidUseAccessState {
 export interface PaidUsePlanBilling {
   /** The plan the subscription was started on. */
   id: string | null;
-  /** `included`: one of the plan's uses. `extra`: past the count, charged the agreed extra price. */
+  /**
+   * `included`: one of the plan's uses. `extra`: past the count, charged: the plan's agreed extra price,
+   * or, past a free trial's uses, the price per use the buyer agreed to (`chargedCents` says which).
+   */
   use: "included" | "extra";
+  /** True on a free trial. Absent from an API that does not say. */
+  trial?: boolean;
   includedUses: number;
   /** Uses brought into this period by a move to a bigger plan. */
   carriedUses: number;
@@ -2951,8 +2993,10 @@ export interface PaidUseRefusal {
    * On a plan: `plan_used_up` (429, on a use), every included use is gone and the plan has no price
    * for an extra one; `plan_ended` (402, on a use), the plan is over and the buyer chooses again;
    * `already_on_plan` (409, on starting a plan), a plan or a paid month still runs. On moving to
-   * another plan (409): `not_on_plan`, `same_plan`, and `not_a_bigger_plan` for one that costs the same
-   * or less. Nothing is charged for any of them.
+   * another plan (409): `not_on_plan`, `same_plan`, `not_a_bigger_plan` for one that costs the same
+   * or less, and `trial_cannot_move` from a free trial (a plan is started over a trial in the usual
+   * way). On starting a free trial (409): `trial_already_used`, and `trial_needs_credits` for an
+   * organization that never added credits. Nothing is charged for any of them.
    */
   error:
     | "copy_subscription_active"
@@ -2965,6 +3009,9 @@ export interface PaidUseRefusal {
     | "not_on_plan"
     | "same_plan"
     | "not_a_bigger_plan"
+    | "trial_cannot_move"
+    | "trial_already_used"
+    | "trial_needs_credits"
     | (string & {});
   message: string;
   /** copy_subscription_active: when the copy's paid month ends (an ISO date). */
@@ -2985,6 +3032,8 @@ export interface PaidUseRefusal {
   plans?: PlanOffer[];
   /** plan_used_up: when the plan's count starts again (an ISO time). Left out when the plan will not renew. */
   resetsAt?: string;
+  /** pricing_changed on starting a free trial: the trial the listing offers now, or null. */
+  trial?: TrialOffer | null;
   /** insufficient_credits: the price of this use and the buyer's credits. */
   priceCents?: number;
   balanceCents?: number;
@@ -3241,7 +3290,8 @@ export const marketplaceApi = {
     }),
 
   /**
-   * Start a plan on a listing that sells use. `plan` is the plan the buyer was shown, term by term:
+   * Start a plan on a listing that sells use, or its free trial (the trial's own terms: price 0, no
+   * extra price; 409 `trial_already_used` or `trial_needs_credits`). `plan` is what the buyer was shown, term by term:
    * it is their consent, and the first 30 days are charged now. A plan that has changed answers 409
    * `pricing_changed` with the plans as they are (`plans`) and nothing charged; 409 `already_on_plan`
    * while a plan or a paid month still runs; 402 `insufficient_credits` with `requiredCents`.
@@ -6517,6 +6567,10 @@ export interface Capabilities {
     minPlanPriceCents: number;
     /** The smallest price of one use past the included ones, in cents. */
     minExtraUsePriceCents: number;
+    /** The most uses a free trial can include. Absent from an API that does not say. */
+    maxTrialUses?: number;
+    /** How many days a free trial lasts. Absent from an API that does not say. */
+    trialDays?: number;
     /** Answers a day on the platform's models for the caller's organization; null when it cannot be read. */
     freeModelDailyAllowance: number | null;
   };

@@ -22,6 +22,9 @@ export const USE_LISTING_COLUMNS = {
   pricePerRequestCents: true,
   monthlyPriceCents: true,
   useAllowedTools: true,
+  // The creator's switch for paying from a wallet: the x402 door judges a
+  // listing by it (services/paidUseX402.ts). Never sent to anyone as it is.
+  x402Enabled: true,
 } as const;
 
 export interface UseListingRow {
@@ -36,6 +39,11 @@ export interface UseListingRow {
   pricePerRequestCents: bigint | null;
   monthlyPriceCents: bigint | null;
   useAllowedTools: string[];
+  /**
+   * agent_listings.x402_enabled, the creator's switch for paying from a
+   * wallet. Optional so a row read by hand without it reads as off.
+   */
+  x402Enabled?: boolean;
 }
 
 export interface UseListingDb {

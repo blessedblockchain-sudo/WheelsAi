@@ -12,8 +12,11 @@
  *   agentGpu       the dedicated GPU switch for agents
  *   paidTasks      the job runner being on (the condition hiring answers
  *                  jobs_not_configured on)
- *   x402           the door's own test over its settings (x402DoorOpen); a
- *                  setting that is not there closes it
+ *   x402           whether the door is usable (x402DoorUsable): its own test
+ *                  over its settings (x402DoorOpen) and a fee payer that is
+ *                  neither the treasury nor the payout wallet, the one answer
+ *                  the door's binding reads too; a setting that is not there
+ *                  closes it
  *   paidUse        the free-model allowance is the day's limit times the
  *                  plan's multiple, the two numbers the chat core's own
  *                  check multiplies (middleware/free-tier-limit.ts); a plan
@@ -29,10 +32,10 @@ import type { FastifyPluginAsync, preHandlerAsyncHookHandler } from "fastify";
 import { env, type Env } from "../config/env.js";
 import { getAvailableFreeModels, type FreeModelConfig } from "../config/free-models.js";
 import { requireAuth } from "../middleware/auth.js";
+import { x402DoorUsable } from "../services/buildPaidUseX402Deps.js";
 import { isEmailConfigured } from "../services/email/emailService.js";
 import { getOrgPlan } from "../services/orgPlan.js";
 import { payoutsRunning } from "../services/payoutRequests.js";
-import { x402DoorOpen } from "../services/x402DoorRules.js";
 import { createCapabilitiesRoutes, type CapabilitiesRouteDeps } from "./capabilities.js";
 
 /**
@@ -53,6 +56,7 @@ export type CapabilitiesEnv = Pick<
       | "PUBLIC_API_URL"
       | "WALLET_MASTER_KEY"
       | "SOLANA_NETWORK"
+      | "TREASURY_WALLET_ADDRESS"
     >
   >;
 
@@ -76,18 +80,9 @@ export function buildCapabilitiesDeps(input: BuildCapabilitiesDepsInput): Capabi
     emailDelivery: () => input.emailConfigured(),
     agentGpu: () => input.env().AGENT_GPU_ENABLED === true,
     paidTasks: () => input.env().JOB_RUNNER_CONCURRENCY > 0,
-    // The one test the door itself is opened by, over the same settings.
-    x402: () => {
-      const settings = input.env();
-      return x402DoorOpen({
-        x402Enabled: settings.X402_ENABLED === true,
-        submitTransactions: settings.X402_SUBMIT_TRANSACTIONS === true,
-        settlementWorkerEnabled: settings.X402_SETTLEMENT_WORKER_ENABLED === true,
-        publicApiUrl: settings.PUBLIC_API_URL,
-        walletMasterKey: settings.WALLET_MASTER_KEY,
-        solanaNetwork: settings.SOLANA_NETWORK ?? "",
-      });
-    },
+    // The one answer the door's binding reads too, over the same settings:
+    // the Sell tab never offers a switch whose door would answer 503.
+    x402: () => x402DoorUsable(input.env()),
     freeModelDailyAllowance: async (orgId) => {
       const perDay = input.env().FREE_TIER_RPD;
       if (typeof perDay !== "number" || !input.planRateMultiplier) throw new Error("allowance not readable");

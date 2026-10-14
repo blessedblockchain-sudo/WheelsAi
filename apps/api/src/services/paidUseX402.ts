@@ -688,7 +688,13 @@ export async function runX402Use<R = never>(input: X402UseInput<R>, deps: X402Us
   try {
     wire = deps.wire();
   } catch (err) {
-    deps.logger?.error({ err }, "x402 door refused: its settings could not be read");
+    // A door the binding closed (its settings, or a fee payer that is the
+    // treasury or the payout wallet) was told once by the binding already.
+    if (err instanceof Error && err.name === "X402DoorClosedError") {
+      deps.logger?.warn({ err }, "x402 door refused: it is closed");
+    } else {
+      deps.logger?.error({ err }, "x402 door refused: its settings could not be read");
+    }
     return refusalOf(UNAVAILABLE());
   }
   const caip2 = x402Caip2Network(wire.network);

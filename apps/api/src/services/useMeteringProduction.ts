@@ -529,3 +529,53 @@ export function beginUseMetering(
     },
   };
 }
+
+/**
+ * The metering of one use at a listing's x402 door (services/paidUseX402.ts):
+ * the payer pays from a wallet, after the answer, so the chat core's charge
+ * is nothing at all. What the use cost on the platform's model keys is noted
+ * exactly as beginUseMetering notes it, and handed to the door's sale
+ * (services/x402Sale.ts), which takes it from the creator's share as a
+ * settle does.
+ */
+export interface X402UseMeteringBinding {
+  /** What the core calls, once, for this agent: it answers null, so nothing is charged or reserved. */
+  beginMetering: AgentChatDeps["beginMetering"];
+  /** Notes what the run used, as beginUseMetering's noteRun does. */
+  noteRun(run: { platformModel: boolean; usage: unknown; content: string; promptChars: number }): void;
+  /** The same for a ready sum, as beginUseMetering's notePlatformUsage does. */
+  notePlatformUsage(usage: TokenUsage | null): void;
+  /** What the use cost on the platform's model keys, in millionths of a cent; 0 when nothing ran on them. */
+  modelCostMicros(): bigint;
+}
+
+export function beginX402Metering(
+  args: { agentId: string },
+  deps: Pick<UseMeteringProductionDeps, "rates"> = productionDeps(),
+): X402UseMeteringBinding {
+  let asked = false;
+  let modelCostMicros = 0n;
+  return {
+    beginMetering: async ({ agentId }) => {
+      // One use, one agent, as for a buyer's use. Anything else is a fault of
+      // ours: the core then refuses and no model is called.
+      if (asked) throw new Error("a use at the x402 door asked for its metering twice");
+      asked = true;
+      if (agentId !== args.agentId) throw new Error("a use at the x402 door asked to meter another agent");
+      // Paid from a wallet after the answer: nothing is charged here.
+      return null;
+    },
+    // The model cost as beginUseMetering computes it, line for line.
+    noteRun: (run) => {
+      const usage = platformUsageOf(
+        { usage: run.usage, platformModel: run.platformModel, content: run.content },
+        run.promptChars,
+      );
+      modelCostMicros = usage ? platformModelCostMicros(usage, deps.rates) : 0n;
+    },
+    notePlatformUsage: (usage) => {
+      modelCostMicros = usage ? platformModelCostMicros(usage, deps.rates) : 0n;
+    },
+    modelCostMicros: () => modelCostMicros,
+  };
+}

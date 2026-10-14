@@ -285,8 +285,9 @@ test("a line is checked as the API checks it: 10 to 280 characters", () => {
 test("the limits and the empty-slug sentence are the API's own", () => {
   const routes = apiSource("routes/marketplace.ts");
   const create = routes.slice(routes.indexOf("const createListingSchema = z.object({"), routes.indexOf("pricingModel: z.enum("));
-  assert.match(create, new RegExp(`title: z\\.string\\(\\)\\.min\\(${LISTING_TITLE_MIN}\\)\\.max\\(${LISTING_TITLE_MAX}\\),`));
-  assert.match(create, new RegExp(`shortDescription: z\\.string\\(\\)\\.min\\(${LISTING_LINE_MIN}\\)\\.max\\(${LISTING_LINE_MAX}\\),`));
+  // Trimmed before they are checked, as the screen trims them.
+  assert.match(create, new RegExp(`title: z\\.string\\(\\)\\.trim\\(\\)\\.min\\(${LISTING_TITLE_MIN}\\)\\.max\\(${LISTING_TITLE_MAX}\\),`));
+  assert.match(create, new RegExp(`shortDescription: z\\.string\\(\\)\\.trim\\(\\)\\.min\\(${LISTING_LINE_MIN}\\)\\.max\\(${LISTING_LINE_MAX}\\),`));
   // A change takes the same fields, each optional.
   assert.match(routes, /const updateListingSchema = createListingSchema\.omit\(\{ agentId: true, orchestrationId: true \}\)\.partial\(\);/);
   assert.match(

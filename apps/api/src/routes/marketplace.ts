@@ -64,8 +64,11 @@ const createListingSchema = z.object({
   // Exactly one of the two, which the service checks and says in a sentence.
   agentId: z.string().uuid().optional(),
   orchestrationId: z.string().uuid().optional(),
-  title: z.string().min(3).max(100),
-  shortDescription: z.string().min(10).max(280),
+  // Trimmed before they are checked: a title or a line of only spaces is
+  // empty, on a create and on a change, and what is saved has no spaces at
+  // its ends.
+  title: z.string().trim().min(3).max(100),
+  shortDescription: z.string().trim().min(10).max(280),
   longDescription: z.string().max(10000).optional(),
   category: z.enum([
     "customer-support",

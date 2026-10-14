@@ -267,8 +267,11 @@ async function call(world: World, method: "POST" | "PATCH" | "GET", url: string,
     const Fastify = (await import("fastify")).default;
     const sensible = await import("@fastify/sensible");
     const { marketplaceRoutes } = await import("../routes/marketplace.js");
-    const app = Fastify();
+    const { globalErrorHandler } = await import("../lib/errorHandler.js");
+    const app = Fastify({ logger: false });
     await app.register(sensible.default);
+    // As the API sets it before the routes: a body the schema refuses is a 400 on its field.
+    app.setErrorHandler(globalErrorHandler);
     app.decorateRequest("auth", null);
     app.addHook("onRequest", async (request) => {
       (request as unknown as { auth: unknown }).auth = { userId: "u1", orgId, type: "jwt", role: "owner" };
@@ -504,6 +507,78 @@ test("a title with no letter or digit makes no slug, and is refused on the title
   const res = await refused(makeWorld(), { title: "!!! ???" });
   assert.equal(res.status, 400);
   assert.deepEqual(res.body.fields, { title: "Give the listing a title with letters or numbers." });
+});
+
+test("a title or a line of only spaces is refused on its field, on a create and on a change, with nothing saved", async () => {
+  const agentBase = {
+    agentId: AGENT_ID,
+    title: "Research Analyst",
+    shortDescription: "Reads filings and answers questions.",
+    category: "research",
+    pricingModel: "per_request",
+    pricePerRequestCents: 5,
+  };
+  const cases: Array<[string, Row, string]> = [
+    ["a workflow's title of spaces", { title: "   " }, "title"],
+    ["a workflow's title of 2 letters in spaces", { title: "  ab  " }, "title"],
+    ["a workflow's line of spaces", { shortDescription: " ".repeat(12) }, "shortDescription"],
+    ["an agent's title of spaces", { ...agentBase, orchestrationId: undefined, title: "     " }, "title"],
+    ["an agent's line of spaces", { ...agentBase, orchestrationId: undefined, shortDescription: "\t".repeat(10) }, "shortDescription"],
+  ];
+  for (const [name, over, field] of cases) {
+    const world = makeWorld();
+    const res = await create(world, over);
+    assert.equal(res.status, 400, name);
+    assert.equal(res.body.error, "validation_failed", name);
+    assert.deepEqual(Object.keys(res.body.fields), [field], name);
+    assert.equal(world.state.listings.length, 0, `${name}: nothing is saved`);
+    assert.deepEqual(world.state.agentCalls, [], name);
+  }
+
+  // A change: the same refusal on the same field, and the row as it was.
+  for (const listing of [{}, { agentId: AGENT_ID, orchestrationId: null }]) {
+    const world = makeWorld({ listing });
+    const before = structuredClone(world.state.listings[0]);
+    for (const [body, field] of [
+      [{ title: "   " }, "title"],
+      [{ shortDescription: " ".repeat(20), title: "Must not be saved" }, "shortDescription"],
+    ] as Array<[Row, string]>) {
+      const res = await call(world, "PATCH", `/listings/${LISTING_ID}`, body);
+      assert.equal(res.status, 400, JSON.stringify(body));
+      assert.equal(res.body.error, "validation_failed");
+      assert.deepEqual(Object.keys(res.body.fields), [field]);
+      assert.deepEqual(world.state.listings[0], before);
+    }
+  }
+});
+
+test("a padded title and line are saved with no spaces at their ends, and the slug is made from the trimmed title", async () => {
+  const world = makeWorld();
+  const res = await create(world, { title: "  Weekly Digest  ", shortDescription: "  Reads the week and writes it up.\n" });
+  assert.equal(res.status, 201);
+  const row = world.state.listings[0]!;
+  assert.deepEqual([row.title, row.shortDescription, row.slug], ["Weekly Digest", "Reads the week and writes it up.", "weekly-digest"]);
+
+  const changed = await call(world, "PATCH", `/listings/${LISTING_ID}`, { title: " Weekly Digest Two ", shortDescription: "   A new line that says what it does.   " });
+  assert.equal(changed.status, 200);
+  assert.deepEqual([row.title, row.shortDescription], ["Weekly Digest Two", "A new line that says what it does."]);
+
+  // An agent's listing the same way; its ordinary create and change are what they were.
+  const agents = makeWorld();
+  const agent = await call(agents, "POST", "/listings", {
+    agentId: AGENT_ID,
+    title: " Research Analyst ",
+    shortDescription: "Reads filings and answers questions.",
+    category: "research",
+    pricingModel: "per_request",
+    pricePerRequestCents: 5,
+  });
+  assert.equal(agent.status, 201);
+  const agentRow = agents.state.listings[0]!;
+  assert.deepEqual([agentRow.title, agentRow.slug, agentRow.agentId], ["Research Analyst", "research-analyst", AGENT_ID]);
+  const edited = await call(agents, "PATCH", `/listings/${LISTING_ID}`, { title: "Research Analyst Pro" });
+  assert.equal(edited.status, 200);
+  assert.equal(agentRow.title, "Research Analyst Pro");
 });
 
 test("a slug that is taken gets the next number, as an agent's listing does", async () => {

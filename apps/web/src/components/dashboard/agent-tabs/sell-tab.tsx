@@ -71,6 +71,7 @@ import {
   type PlansForm,
   type SavedPlan,
 } from "@/lib/sell-plans";
+import { walletPaymentsOnLine, x402SaveOf } from "@/lib/sell-x402";
 import { cn } from "@/lib/utils";
 import { CopyRow } from "./api-tab";
 
@@ -109,6 +110,10 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
   const [loadError, setLoadError] = useState<unknown>(null);
   const [form, setForm] = useState<SellForm>(() => formOfListing(null));
   const [keepCopy, setKeepCopy] = useState(false);
+  // The switch for paying from a wallet, as on screen. Filled from the listing as it was read.
+  const [walletPay, setWalletPay] = useState(false);
+  // The API's refusal of the switch, drawn under it. Cleared by any edit, a new save or a read.
+  const [walletError, setWalletError] = useState<string | null>(null);
   const [errors, setErrors] = useState<SellErrors>({});
   // The plans under "Pay per use", as typed. Not loaded until the listing's own were read.
   const [plans, setPlans] = useState<PlansForm>({ loaded: false, rows: [] });
@@ -162,6 +167,8 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
       setData({ listing, capabilities, link, revenue, keepCopy: kept });
       setForm(formOfListing(listing, agent.agentKind));
       setKeepCopy(kept);
+      setWalletPay(listing?.x402Enabled === true);
+      setWalletError(null);
       setErrors({});
       if (!keepPlans) {
         setPlans(plansFormOf(listing));
@@ -223,14 +230,25 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
   // The block shows these. What a save is measured against is `plansRead`, the plans the rows were made from.
   const savedPlans = savedPlansOf(listing);
   const plansUnchanged = plansSaveOf({ sell: form, form: plans, saved: plansRead, limits: planLimits }).kind === "none";
+  // Paying from a wallet is offered only when the capabilities say so; an API that does not say offers nothing.
+  const walletAvailable = capabilities?.x402?.available === true;
+  const walletUnchanged = x402SaveOf({ form, walletPay, listing, available: walletAvailable }).x402Enabled === undefined;
   const unchanged =
-    sameSellForm(form, baseline) && (!asksForPayment(form) || keepCopy === data.keepCopy) && plansUnchanged;
+    sameSellForm(form, baseline) && walletUnchanged && (!asksForPayment(form) || keepCopy === data.keepCopy) && plansUnchanged;
 
   function change(next: SellForm) {
     setForm(next);
     setErrors({});
     setError(null);
     setPlansStale(false);
+    setWalletError(null);
+  }
+
+  function changeWalletPay(checked: boolean) {
+    setWalletPay(checked);
+    setError(null);
+    setPlansStale(false);
+    setWalletError(null);
   }
 
   function changePlans(next: PlansForm) {
@@ -259,6 +277,7 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
   async function save(sent: SellForm = form) {
     setError(null);
     setPlansStale(false);
+    setWalletError(null);
     const built = buildSellSave(sent, agent, limits);
     if (!built.ok) {
       setErrors(built.errors);
@@ -280,20 +299,29 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
     }
     setLineError(null);
 
+    // The switch for paying from a wallet goes only when it changed, or off when the answer left pay per use:
+    // an edit that leaves pay per use while carrying it on is refused whole.
+    const walletSave = x402SaveOf({ form: sent, walletPay, listing, available: walletAvailable });
+
     setBusy("save");
     let savedListing: MarketplaceListing;
     try {
       const saved = listing
-        ? await marketplaceApi.updateListing(listing.id, sellUpdateOf(built.save, listing))
-        : await marketplaceApi.createListing(firstListingOf(agent, line ?? "", built.save));
+        ? await marketplaceApi.updateListing(listing.id, { ...sellUpdateOf(built.save, listing), ...walletSave })
+        : await marketplaceApi.createListing({ ...firstListingOf(agent, line ?? "", built.save), ...walletSave });
       savedListing = saved.listing;
     } catch (err) {
       if (!mounted.current) return;
       const fields = getValidationError(err)?.fields;
       const fieldErrors = fields ? sellFieldErrors(fields) : {};
       setErrors(fieldErrors);
+      // A refusal of the switch is drawn under the switch, in the API's own sentence.
+      const walletRefusal = fields?.x402Enabled ?? null;
+      setWalletError(walletRefusal);
       // The API's own sentence, as it came.
-      if (Object.keys(fieldErrors).length === 0) setError(getErrorMessage(err, "That could not be saved. Try again."));
+      if (Object.keys(fieldErrors).length === 0 && walletRefusal === null) {
+        setError(getErrorMessage(err, "That could not be saved. Try again."));
+      }
       setBusy(null);
       // Another tab or a teammate listed this agent meanwhile: show that listing.
       if (codeOf(err) === "listing_exists") {
@@ -303,6 +331,8 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
       }
       return;
     }
+    // The switch as the API saved it: off after a move away from pay per use, even if the read below fails.
+    if (mounted.current) setWalletPay(savedListing.x402Enabled === true);
 
     // The agent has its page now, so the copy setting has a place to be saved.
     let keepProblem: string | null = null;
@@ -377,6 +407,7 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
   // One line for each plan of a listing sold per use, and one for its trial of some uses at no price.
   // How many people are on each is the creator's to see.
   const planLines = planSaleLines(listing, planLimits);
+  const walletOnLine = walletPaymentsOnLine({ listing, available: walletAvailable });
 
   const question = (
     <WhoCanUse
@@ -387,6 +418,7 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
       limits={limits}
       capacity={capabilities?.paidUse.freeModelDailyAllowance ?? null}
       keepCopy={{ checked: keepCopy, onChange: setKeepCopy }}
+      walletPayments={walletAvailable ? { checked: walletPay, onChange: changeWalletPay, error: walletError } : undefined}
       listing={listing}
       plans={{ form: plans, onChange: changePlans, errors: planErrors, limits: planLimits, saved: savedPlans }}
       // A listing that is on sale changes at once: the dialog said "from now on".
@@ -504,6 +536,8 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
                 </ul>
               </div>
             )}
+
+            {walletOnLine && <p className="text-sm text-foreground">{walletOnLine}</p>}
 
             {(earned || stats.length > 0) && (
             <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">

@@ -32,9 +32,11 @@ import {
   type SellSubject,
 } from "@/lib/sell-choice";
 import { plansKeptLine, sellsWithPlans, type PlanErrors, type PlanLimits, type PlansForm, type SavedPlan } from "@/lib/sell-plans";
+import { walletPaymentPriceCents, walletPaymentsShown } from "@/lib/sell-x402";
 import { cn } from "@/lib/utils";
 
 import { PlansBlock } from "./plans-block";
+import { WalletPayments } from "./wallet-payments";
 
 /** The plans under "Pay per use": the rows as typed, and the plans the listing has now. */
 export interface WhoCanUsePlans {
@@ -65,6 +67,11 @@ export type WhoCanUseProps = WhoCanUseSubject & {
   capacity?: number | null;
   /** "Keep a copy of what people send": left out, the switch is not shown. */
   keepCopy?: { checked: boolean; onChange: (checked: boolean) => void };
+  /**
+   * The switch for paying from a wallet, passed only while paying from a wallet is available. Left out
+   * (the listing wizard, a workflow's Sell card), nothing about it is drawn.
+   */
+  walletPayments?: { checked: boolean; onChange: (checked: boolean) => void; error?: string | null };
   /** The listing the agent has now, for what a change does to the people who already pay. */
   listing?: SellListing | null;
   /** Left out, no plans are offered under "Pay per use" and the question is as it was. */
@@ -101,6 +108,7 @@ export function WhoCanUse({
   limits,
   capacity,
   keepCopy,
+  walletPayments,
   listing,
   plans,
   onSoldAsCopies,
@@ -128,6 +136,8 @@ export function WhoCanUse({
   const plansShown = plans && plans.form.loaded && sellsWithPlans(form) ? plans : null;
   // The answer is moving away from "Pay per use": what the people on a plan keep.
   const plansKept = plans ? plansKeptLine(listing ? { ...listing, plans: plans.saved } : null, form, plans.limits) : null;
+  // Paying from a wallet goes with "Pay per use" of an agent, and only when the screen passed the switch.
+  const walletShown = walletPaymentsShown({ subject, sells: form.sells, choice: form.choice, available: walletPayments !== undefined });
 
   // What is sold changed: the control that did it is gone, so focus goes to what took its place.
   useEffect(() => {
@@ -360,6 +370,16 @@ export function WhoCanUse({
             </div>
           )}
         </div>
+      )}
+
+      {walletShown && walletPayments && (
+        <WalletPayments
+          checked={walletPayments.checked}
+          onChange={walletPayments.onChange}
+          error={walletPayments.error ?? null}
+          priceCents={walletPaymentPriceCents(form, limits)}
+          disabled={disabled}
+        />
       )}
 
       {!workflow && (moreOptions || form.sells === "use") && (

@@ -209,9 +209,12 @@ export function buildPlatformMoneyDeps(input: BuildPlatformMoneyDepsInput): Plat
           where: { status: "settled", settledAt: within(range) },
           _sum: { platformFeeCents: true },
         }),
+        // A deployment's own payments only. A payment with a listing paid one
+        // use of a creator's agent from a wallet: its gross is the creator's
+        // sale, and the platform's 10% of it is already in the fees above.
         db.x402Payment.groupBy({
           by: ["asset"],
-          where: { status: "settled", settledAt: within(range) },
+          where: { status: "settled", listingId: null, settledAt: within(range) },
           _sum: { amountUsd: true },
           _count: { _all: true },
         }),

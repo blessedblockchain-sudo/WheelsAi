@@ -75,6 +75,8 @@ interface RevenueRow {
   id: string;
   listingId: string | null;
   installId: string | null;
+  // Not null here: the sweep reads only per_request rows, which always have a
+  // buyer. Only a sale paid from a wallet (type "x402") has none.
   buyerId: string;
   publisherId: string;
   grossAmountCents: bigint;

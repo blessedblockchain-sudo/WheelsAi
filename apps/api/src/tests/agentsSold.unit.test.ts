@@ -10,8 +10,9 @@
  *
  * And an agent people have paid for is not deleted: 409 agent_has_buyers
  * while its listing, whatever it sells, holds an install or a subscription
- * row, before anything is stopped or deleted. With a listing and no buyers
- * it deletes as it always did.
+ * row, or a sale paid from a wallet through the x402 door, before anything
+ * is stopped or deleted. With a listing and no buyers it deletes as it
+ * always did.
  *
  * Hermetic: the global prisma's delegates are replaced for each test, and
  * every delegate a refusal must not reach fails the test when touched.
@@ -76,7 +77,29 @@ function listingOf(over: Row = {}): Row {
 const MONTHLY = { pricingModel: "monthly", pricePerRequestCents: null, monthlyPriceCents: 900n };
 const FREE = { pricingModel: "free", pricePerRequestCents: null };
 
-async function appWith(agent: Row | null, listing: Row | null, options: { listingReadFails?: boolean } = {}) {
+/**
+ * The sale and payment rows the delete may look at. A sale paid from a wallet
+ * has payerWallet set and no buyer; a held or failed payment from a wallet is
+ * an x402_payments row with the listing and never a sale.
+ */
+interface MoneyRows {
+  revenue?: Row[];
+  x402Payments?: Row[];
+}
+
+/** Prisma's where, for the few shapes these reads use. */
+function matchesWhere(row: Row, where: Row): boolean {
+  return Object.entries(where).every(([key, cond]) => {
+    if (cond !== null && typeof cond === "object" && "not" in cond) return (row[key] ?? null) !== cond.not;
+    return (row[key] ?? null) === cond;
+  });
+}
+
+async function appWith(
+  agent: Row | null,
+  listing: Row | null,
+  options: { listingReadFails?: boolean } & MoneyRows = {},
+) {
   const calls: string[] = [];
   const names = [
     "agent",
@@ -88,6 +111,8 @@ async function appWith(agent: Row | null, listing: Row | null, options: { listin
     "taskExecution",
     "openClawChannel",
     "webhook",
+    "marketplaceRevenue",
+    "x402Payment",
     "$transaction",
   ] as const;
   const saved = Object.fromEntries(names.map((name) => [name, (prisma as any)[name]]));
@@ -130,6 +155,26 @@ async function appWith(agent: Row | null, listing: Row | null, options: { listin
       assert.deepEqual(where, { agentId: AGENT_ID, status: "published", sells: "use" });
       return row.status === "published" && row.sells === "use" ? { ...row } : null;
     },
+  };
+  (prisma as any).marketplaceRevenue = {
+    findFirst: async ({ where, select }: Row) => {
+      calls.push("marketplaceRevenue.findFirst(wallet)");
+      assert.deepEqual(select, { id: true });
+      const row = (options.revenue ?? []).find((r) => matchesWhere(r, where));
+      return row ? { id: row.id } : null;
+    },
+  };
+  // A payment that never became a sale is not a buyer: reading these rows
+  // would be the wrong question, so each read is recorded and answered.
+  const payments = (method: string) => async ({ where }: Row) => {
+    calls.push(`x402Payment.${method}`);
+    const rows = (options.x402Payments ?? []).filter((r) => matchesWhere(r, where ?? {}));
+    return method === "count" ? rows.length : method === "findMany" ? rows : (rows[0] ?? null);
+  };
+  (prisma as any).x402Payment = {
+    findFirst: payments("findFirst"),
+    findMany: payments("findMany"),
+    count: payments("count"),
   };
   (prisma as any).agentGraph = {
     findUnique: async () => {
@@ -348,6 +393,96 @@ test("an agent with a listing and no buyers deletes as before, and so does one w
     } finally {
       await close();
     }
+  }
+});
+
+const WALLET = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin";
+
+/** A sale of one use paid from a wallet, as the x402 door writes it. */
+function walletSale(over: Row = {}): Row {
+  return {
+    id: "revenue-wallet-1",
+    listingId: "listing-1",
+    buyerId: null,
+    payerWallet: WALLET,
+    x402PaymentId: "payment-1",
+    type: "x402",
+    status: "settled",
+    ...over,
+  };
+}
+
+test("delete is refused, in the same words, when the only buyer paid from a wallet", async () => {
+  const { remove, calls, world, close } = await appWith(storedAgent(), listingOf(), { revenue: [walletSale()] });
+  try {
+    const res = await remove();
+    assert.equal(res.statusCode, 409);
+    assert.deepEqual(res.json(), { error: "agent_has_buyers", message: AGENT_HAS_BUYERS_MESSAGE });
+    // Three reads, and nothing after them: no bot lookup, no stop, no delete.
+    assert.deepEqual(calls, ["agent.findFirst", "agentListing.findFirst(buyers)", "marketplaceRevenue.findFirst(wallet)"]);
+    assert.equal(world.deleted, false);
+  } finally {
+    await close();
+  }
+
+  // The same answer as an agent with an install, word for word.
+  const installed = await appWith(storedAgent(), listingOf({ installs: 1 }));
+  try {
+    const walletRefusal = await appWith(storedAgent(), listingOf({ status: "archived" }), { revenue: [walletSale()] });
+    try {
+      const a = await installed.remove();
+      const b = await walletRefusal.remove();
+      assert.equal(b.statusCode, a.statusCode);
+      assert.equal(b.body, a.body);
+    } finally {
+      await walletRefusal.close();
+    }
+  } finally {
+    await installed.close();
+  }
+});
+
+test("a listing whose only wallet payments are held or failed does not hold the delete", async () => {
+  const x402Payments = [
+    { id: "payment-held", listingId: "listing-1", status: "held", payerAddress: WALLET },
+    { id: "payment-failed", listingId: "listing-1", status: "failed", payerAddress: WALLET },
+  ];
+  // A wallet sale of another listing, and a sale of this one with a buyer
+  // (paid in credits, its install since gone), are not this listing's wallet sales.
+  const revenue = [
+    walletSale({ id: "revenue-other", listingId: "listing-2" }),
+    { id: "revenue-buyer", listingId: "listing-1", buyerId: ORG, payerWallet: null, type: "per_request", status: "settled" },
+  ];
+  const { remove, calls, world, close } = await appWith(storedAgent(), listingOf(), { revenue, x402Payments });
+  try {
+    const res = await remove();
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(res.json(), { message: "Agent deleted" });
+    assert.equal(world.deleted, true);
+    assert.ok(!calls.some((call) => call.startsWith("x402Payment.")), calls.join(", "));
+  } finally {
+    await close();
+  }
+});
+
+test("a wallet sales read that fails deletes nothing", async () => {
+  const { remove, world, close } = await appWith(storedAgent(), listingOf(), {
+    revenue: [
+      new Proxy(
+        {},
+        {
+          get: () => {
+            throw new Error("the sales could not be read");
+          },
+        },
+      ),
+    ],
+  });
+  try {
+    assert.equal((await remove()).statusCode, 500);
+    assert.equal(world.deleted, false);
+  } finally {
+    await close();
   }
 });
 

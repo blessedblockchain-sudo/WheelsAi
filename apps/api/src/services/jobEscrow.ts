@@ -219,6 +219,8 @@ export interface EscrowTx extends EarningsLedgerTx {
     findUnique(args: { where: { jobId: string } }): Promise<{
       id: string;
       listingId: string | null;
+      // Not null here: a job's escrow row always has its buyer. Only a sale
+      // paid from a wallet (type "x402") has none, and it is never a job's.
       buyerId: string;
       publisherId: string;
       grossAmountCents: bigint;

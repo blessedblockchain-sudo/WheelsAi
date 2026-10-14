@@ -544,7 +544,18 @@ export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync
       where: { agentId },
       select: { id: true, _count: { select: { installs: true, subscriptions: true } } },
     });
-    if (soldListing && soldListing._count.installs + soldListing._count.subscriptions > 0) {
+    // A use paid from a wallet through the x402 door has no install and no
+    // subscription: its sale row, which names the paying wallet, is what
+    // says someone paid. A payment that never became a sale (held, or
+    // failed) has no such row and does not hold the delete.
+    const hasBuyers =
+      soldListing !== null &&
+      (soldListing._count.installs + soldListing._count.subscriptions > 0 ||
+        (await prisma.marketplaceRevenue.findFirst({
+          where: { listingId: soldListing.id, payerWallet: { not: null } },
+          select: { id: true },
+        })) !== null);
+    if (hasBuyers) {
       return reply.status(409).send({ error: "agent_has_buyers", message: AGENT_HAS_BUYERS_MESSAGE });
     }
 

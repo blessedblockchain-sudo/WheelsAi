@@ -49,7 +49,8 @@ function matches(row: Row, where: Row | undefined): boolean {
       if ("lt" in cond && !(value !== null && value !== undefined && value < cond.lt)) return false;
       if ("gte" in cond && !(value !== null && value !== undefined && value >= cond.gte)) return false;
       if ("lte" in cond && !(value !== null && value !== undefined && value <= cond.lte)) return false;
-    } else if (value !== cond) {
+    } else if (cond === null ? value !== null && value !== undefined : value !== cond) {
+      // A column a row does not name is NULL, as it is in the database.
       return false;
     }
   }
@@ -589,6 +590,41 @@ test("every figure, from rows that exercise it", async () => {
     ...ALL_ON,
     solPrice: { source: "pyth", ok: true, ageSeconds: 4 },
   });
+});
+
+test("a payment for a listing is a creator's sale: its gross is not income, and its fee counts once", async () => {
+  const store = fullStore();
+  // One use of a creator's agent paid from a wallet through the x402 door, at
+  // 5 cents: the payment (settled at finalized) and the sale it became.
+  store.x402Payment.push({
+    status: "settled",
+    asset: "USDC",
+    amountUsd: 0.05,
+    settledAt: IN,
+    listingId: "listing-door",
+  });
+  store.marketplaceRevenue.push({
+    status: "settled",
+    type: "x402",
+    buyerId: null,
+    payerWallet: "a-paying-wallet",
+    grossAmountCents: 5n,
+    platformFeeCents: 1n,
+    creatorAmountCents: 4n,
+    settledAt: IN,
+  });
+  // A deployment's own payment says listingId null in so many words, and counts.
+  store.x402Payment.push({ status: "settled", asset: "USDC", amountUsd: 0.25, settledAt: IN, listingId: null });
+
+  const res = await request(buildPlatformMoneyDeps(input({ prisma: fakePrisma(store) })), { "x-admin-key": ADMIN_KEY });
+  assert.equal(res.statusCode, 200);
+  const income = ok((res.json() as PlatformMoneyResponse).income);
+  // 750 from the rows of "every figure", and the door sale's 1 cent once.
+  assert.equal(income.marketplaceFeesCents, "751");
+  assert.deepEqual(income.x402Received, [
+    { asset: "SOL", count: 1, amountUsd: 2 },
+    { asset: "USDC", count: 3, amountUsd: 2 },
+  ]);
 });
 
 test("an empty database answers zeros, as strings", async () => {

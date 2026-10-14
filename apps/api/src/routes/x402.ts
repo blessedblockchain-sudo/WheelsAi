@@ -47,6 +47,13 @@ interface X402MetricsHistoryRow {
   worker_skipped: number;
 }
 
+// A payment with a listing was made by a stranger's wallet for one use of
+// the organization's agent through the x402 door: it is not the
+// organization's own payment, and its payer's wallet and failures are not
+// the organization's to see. A creator sees those sales on the earnings page.
+// Every read below keeps to the organization's own rows.
+const OWN_PAYMENTS = { listingId: null } as const;
+
 export const x402Routes: FastifyPluginAsync = async (app) => {
   app.addHook("preHandler", requireAuth);
 
@@ -61,6 +68,7 @@ export const x402Routes: FastifyPluginAsync = async (app) => {
       prisma.x402Payment.findMany({
         where: {
           orgId,
+          ...OWN_PAYMENTS,
           status: "failed",
         },
         orderBy: { updatedAt: "desc" },
@@ -165,6 +173,7 @@ export const x402Routes: FastifyPluginAsync = async (app) => {
 
     const where = {
       orgId,
+      ...OWN_PAYMENTS,
       ...(query.status ? { status: query.status } : {}),
     };
 
@@ -214,6 +223,7 @@ export const x402Routes: FastifyPluginAsync = async (app) => {
       where: {
         id: paymentId,
         orgId,
+        ...OWN_PAYMENTS,
       },
     });
 
@@ -225,8 +235,15 @@ export const x402Routes: FastifyPluginAsync = async (app) => {
     }
 
     // The signed transaction stays with the row: it is what the settlement
-    // worker reads, and no caller needs it back.
-    const { signedTxB64: _signedTxB64, ...shown } = payment;
+    // worker reads, and no caller needs it back. The door's two columns stay
+    // out too: always null on an organization's own row, and this answer
+    // keeps the shape it had before the door.
+    const {
+      signedTxB64: _signedTxB64,
+      listingId: _listingId,
+      messageHash: _messageHash,
+      ...shown
+    } = payment;
     return { payment: shown };
   });
 };

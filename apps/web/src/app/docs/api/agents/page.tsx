@@ -48,6 +48,7 @@ const toc = [
   { id: "paid-use", title: "Use an agent you pay for" },
   { id: "paid-access", title: "Where you stand", sub: true },
   { id: "paid-plans", title: "Plans", sub: true },
+  { id: "paid-trial", title: "Free trial", sub: true },
   { id: "paid-chat", title: "Chat", sub: true },
   { id: "paid-run", title: "Run a task", sub: true },
   { id: "paid-results", title: "Read results", sub: true },
@@ -734,6 +735,12 @@ export default function AgentsApiPage() {
           <code>finishedAt</code> dates only, <code>scheduled.lastResultAt</code> is the latest, and{" "}
           <code>scheduled.schedule</code> is <code>&#123; cronExpression, timezone &#125;</code> or <code>null</code>.
         </p>
+        <p>
+          <code>use.paid</code> also carries <code>plans</code>, the <a href="#paid-plans">plans</a> the listing
+          offers (empty when it offers none), and <code>trial</code>, the{" "}
+          <a href="#paid-trial">free trial</a> it offers beside them:{" "}
+          <code>&#123; id, includedUses, days &#125;</code>, or <code>null</code> when it offers none.
+        </p>
       </Endpoint>
 
       <h3 id="agent-management-errors">Errors</h3>
@@ -1340,7 +1347,8 @@ if reply.tool_calls:
       <h2 id="paid-use">Use an agent you pay for</h2>
       <p>
         A listing that sells use lets people use the creator&apos;s own agent from their WheelsAI credits: per message or
-        run, on a <a href="#paid-plans">plan</a> with a number of uses for 30 days, or per month. They never get a copy,
+        run, on a <a href="#paid-plans">plan</a> with a number of uses for 30 days, or per month. A listing sold per
+        use can also offer a <a href="#paid-trial">free trial</a>. They never get a copy,
         and no route returns its instructions, tools or model. Start by agreeing to the price or starting a plan (
         <Link href="/docs/api/marketplace#use"><code>POST /api/marketplace/listings/&#123;id&#125;/use</code></Link>),
         then use the agent here. All four routes need you signed in, with a session or an API key. A key needs the{" "}
@@ -1380,8 +1388,8 @@ if reply.tool_calls:
 
       <Endpoint id="paid-access" method="GET" path="/api/a/{handle}/access" auth="API key or session" title="Where you stand with an agent">
         <p>
-          Answers what the listing asks, the plans it offers, what you agreed to, the plan you are on and your credits.
-          It is a read: it costs nothing and takes no use.
+          Answers what the listing asks, the plans and the free trial it offers, what you agreed to, the plan you are
+          on and your credits. It is a read: it costs nothing and takes no use.
         </p>
         <CodeBlock
           language="json"
@@ -1402,6 +1410,7 @@ if reply.tool_calls:
   "plan": {
     "id": "7c1e4b02-...",
     "name": "Starter",
+    "trial": false,
     "includedUses": 500,
     "carriedUses": 0,
     "usedUses": 425,
@@ -1410,7 +1419,10 @@ if reply.tool_calls:
     "resetsAt": "2026-11-12T09:30:00.000Z",
     "warning": 85
   },
+  "trial": { "id": "e41d07aa-...", "includedUses": 20, "days": 7 },
   "trialAvailable": false,
+  "trialNeedsCredits": false,
+  "trialEnded": false,
   "accepted": { "pricingModel": null, "pricePerRequestCents": null, "monthlyPriceCents": 900 },
   "subscription": {
     "status": "active",
@@ -1429,8 +1441,9 @@ if reply.tool_calls:
             <code>access</code> is <code>none</code> (you have not started), <code>subscribed</code> (a plan or a month
             is running), <code>listing_pricing</code> (the listing&apos;s price per use is what you agreed to, or
             lower), <code>pricing_changed</code> (the price went up; accept it to continue),{" "}
-            <code>subscription_lapsed</code>, <code>plan_ended</code> (your plan is over and you have not agreed to the
-            price per use: choose a plan or pay per use), <code>not_offered</code> or <code>own_agent</code>.
+            <code>subscription_lapsed</code>, <code>plan_ended</code> (your plan or your free trial is over and you
+            have not agreed to the price per use: choose a plan or pay per use), <code>not_offered</code> or{" "}
+            <code>own_agent</code>.
           </li>
           <li>
             <code>terms</code> is what the listing asks now, or <code>null</code> when use is not on sale.{" "}
@@ -1439,8 +1452,16 @@ if reply.tool_calls:
           <li>
             <code>plans</code> is the plans the listing offers now, in the order they are shown, and empty when it
             offers none. <code>plan</code> is the plan you are on while it gives you uses, and <code>null</code>{" "}
-            otherwise. Both are described under <a href="#paid-plans">plans</a>. <code>trialAvailable</code> is always{" "}
-            <code>false</code>.
+            otherwise. Both are described under <a href="#paid-plans">plans</a>.
+          </li>
+          <li>
+            <code>trial</code> is the <a href="#paid-trial">free trial</a> the listing offers now,{" "}
+            <code>&#123; id, includedUses, days &#125;</code>, or <code>null</code> when it offers none.{" "}
+            <code>trialAvailable</code> is whether your organization could start it now. In the example it is{" "}
+            <code>false</code> because a plan is running. <code>trialNeedsCredits</code> is <code>true</code> when the
+            one thing missing is that your organization has never added credits. <code>trialEnded</code> is{" "}
+            <code>true</code> when <code>access</code> is <code>plan_ended</code> and what ended was your free trial,
+            not a paid plan.
           </li>
           <li>
             <code>accepted</code> is what you agreed to, or <code>null</code> when you have not started. Starting a
@@ -1550,15 +1571,16 @@ if reply.tool_calls:
         title="The plan you are on (plan, and billing.plan after a use)"
         fields={[
           { name: "id", type: "uuid | null", description: "The plan you started." },
-          { name: "name", type: "string", description: <>What its creator calls it now. In the access answer only.</> },
-          { name: "use", type: "enum", description: <>In <code>billing.plan</code> only: <code>included</code> for one of the plan&apos;s uses, <code>extra</code> for a use past the count, charged the extra price you agreed to.</> },
-          { name: "includedUses", type: "integer", description: "The uses of the 30 days, as you agreed to them." },
+          { name: "name", type: "string", description: <>What its creator calls it now, and <code>Free trial</code> for a free trial. In the access answer only.</> },
+          { name: "trial", type: "boolean", description: <><code>true</code> on the listing&apos;s <a href="#paid-trial">free trial</a>, <code>false</code> on a paid plan.</> },
+          { name: "use", type: "enum", description: <>In <code>billing.plan</code> only: <code>included</code> for one of the plan&apos;s uses, <code>extra</code> for a use past the count, charged the extra price you agreed to. Past the uses of a free trial, <code>extra</code> is a use charged the listing&apos;s price per use.</> },
+          { name: "includedUses", type: "integer", description: "The uses of the 30 days, as you agreed to them. On a free trial: the uses of its 7 days." },
           { name: "carriedUses", type: "integer", description: "Uses brought into these 30 days by a move up, on top of the included ones. 0 after a renewal." },
           { name: "usedUses", type: "integer", description: "Uses taken in these 30 days." },
           { name: "remainingUses", type: "integer", description: "Included plus carried, less the ones used. Never below 0." },
-          { name: "extraUsePriceCents", type: "integer | null", description: <>What each use past the count costs, as you agreed. <code>null</code>: the plan stops until it renews.</> },
-          { name: "resetsAt", type: "string (ISO time)", description: "When the count starts again. Left out when the plan will not renew: you cancelled the renewal, its creator ended the plan, or the listing is no longer sold per use." },
-          { name: "warning", type: "85 | 100 | null", description: "85 when 85% of the uses are gone, 100 when all are." },
+          { name: "extraUsePriceCents", type: "integer | null", description: <>What each use past the count costs, as you agreed. <code>null</code>: the plan stops until it renews. Always <code>null</code> on a free trial.</> },
+          { name: "resetsAt", type: "string (ISO time)", description: "When the count starts again. Left out when the plan will not renew: you cancelled the renewal, its creator ended the plan, or the listing is no longer sold per use. Always left out on a free trial." },
+          { name: "warning", type: "85 | 100 | null", description: "85 when 85% of the uses are gone, 100 when all are. On a free trial too, although it sends no email." },
         ]}
       />
       <p>
@@ -1574,7 +1596,153 @@ if reply.tool_calls:
         organization who have a verified email address get one email for that level in those 30 days. Everything your
         organization pays to use is on the <strong>Usage</strong> page of the dashboard (
         <code>/dashboard/usage</code>) and in{" "}
-        <Link href="/docs/api/marketplace#usage"><code>GET /api/billing/marketplace-usage</code></Link>.
+        <Link href="/docs/api/marketplace#usage"><code>GET /api/billing/marketplace-usage</code></Link>. A free trial
+        sends no such email.
+      </p>
+
+      <h3 id="paid-trial">Free trial</h3>
+      <p>
+        A listing sold per use can offer one free trial beside its plans: a number of uses, for 7 days, at no price.
+        Your organization starts it once for a listing. It never renews and nothing is charged for it, at its start,
+        on a use or at its end. It is not{" "}
+        <Link href="/docs/guides/web-chat-widget#try-it">Try it</Link>, the free preview chat every published
+        listing has (<code>trial.enabled</code> on a listing): that is open to anyone and needs no start.
+      </p>
+      <Fields
+        title="A free trial on offer (trial)"
+        fields={[
+          { name: "id", type: "uuid", description: "The trial." },
+          { name: "includedUses", type: "integer", description: "The uses it includes, 1 to 50." },
+          { name: "days", type: "integer", description: "How many days it lasts from its start: 7." },
+        ]}
+      />
+      <p>
+        The same three fields come in <code>trial</code> of the access answer and of{" "}
+        <a href="#public-page"><code>GET /api/a/&#123;handle&#125;</code></a> (under <code>use.paid</code>), and in{" "}
+        <code>freeTrial</code> of <Link href="/docs/api/marketplace#get-listing">a listing</Link>.
+      </p>
+      <p>
+        <strong>Who can start it.</strong> <code>trialAvailable</code> on the access answer is <code>true</code> when
+        all of this holds: the listing offers a trial now; your organization has never started one on this listing;
+        no plan, paid month or trial of yours is running on it; and your organization has added credits at least
+        once. Credits count when your organization paid for them, by card, from a wallet or by a deposit, however
+        long ago and whatever is left of them. Credits given as a bonus, such as the ones for verifying an email
+        address, and earnings taken as credits do not count. When that is the one thing missing,{" "}
+        <code>trialNeedsCredits</code> is <code>true</code>. A trial is started once for each organization and
+        listing, ever: not again after it ended, after you stopped using the agent, or after a paid plan.
+      </p>
+      <p>
+        <strong>Start it</strong> on the route that starts a plan,{" "}
+        <Link href="/docs/api/marketplace#use"><code>POST /api/marketplace/listings/&#123;id&#125;/use</code></Link>,
+        with the trial&apos;s own terms as you were shown them: its <code>id</code>, a price of 0, its{" "}
+        <code>includedUses</code> and no price for an extra use. It needs an owner or admin, or a key granted{" "}
+        <code>marketplace:install</code> by name. It answers <code>201</code>, and <code>subscription.plan</code> is
+        the trial&apos;s count, with <code>trial</code> <code>true</code>.
+      </p>
+      <CodeBlock
+        language="bash"
+        code={`curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/use" \\
+  -H "Authorization: Bearer $WHEELSAI_API_KEY" -H "Content-Type: application/json" \\
+  -d '{ "plan": { "id": "'"$TRIAL_ID"'", "priceCents": 0, "includedUses": 20, "extraUsePriceCents": null } }'`}
+      />
+      <DocTable
+        caption="Refusals of starting a free trial"
+        columns={[
+          { key: "status", label: "Status" },
+          { key: "code", label: "error" },
+          { key: "when", label: "When" },
+        ]}
+        rows={[
+          { status: <code>409</code>, code: <code>trial_already_used</code>, when: "Your organization started the free trial of this listing before, whether it ended, was stopped or is still running, and whatever runs for this agent now. Choose a plan or pay per use." },
+          { status: <code>409</code>, code: <code>trial_needs_credits</code>, when: "Your organization has never added credits. Add credits once, then start it. The trial itself costs nothing." },
+          { status: <code>409</code>, code: <code>already_on_plan</code>, when: "A plan or a paid month is running for this agent, and your organization never started this trial." },
+          { status: <code>409</code>, code: <code>pricing_changed</code>, when: <>The trial is not what you were shown: its creator changed or ended it, or the listing is no longer sold per use. With <code>pricing</code>, the <code>plans</code> on offer now and <code>trial</code>, the trial on offer now or <code>null</code>.</> },
+          { status: <code>409</code>, code: <code>trial_cannot_move</code>, when: <>A move (<code>switchNow</code>) by a buyer on a free trial. Start the plan you want without <code>switchNow</code>.</> },
+        ]}
+      />
+      <p>
+        Nothing is written on any of them, and the listing&apos;s own refusals of a start apply too, as for a plan.
+        These five are answered by the start route, as <code>&#123; error, message &#125;</code>. They are not
+        answered on <code>/v1</code>, where nothing is started.
+      </p>
+      <p>
+        <strong>A use on it</strong> is an included use of a plan. It is taken when the request is sent and given back
+        if no answer is delivered, and <code>billing.chargedCents</code> is 0:
+      </p>
+      <CodeBlock
+        language="json"
+        code={`{
+  "chargedCents": 0,
+  "balanceCents": 495,
+  "access": "subscribed",
+  "plan": {
+    "id": "e41d07aa-...",
+    "use": "included",
+    "trial": true,
+    "includedUses": 20,
+    "carriedUses": 0,
+    "usedUses": 3,
+    "remainingUses": 17,
+    "extraUsePriceCents": null,
+    "warning": null
+  }
+}`}
+      />
+      <ul>
+        <li>
+          The answer carries the plan&apos;s <a href="#paid-headers">usage headers</a>, with the trial&apos;s id in{" "}
+          <code>x-wheelsai-plan</code>. <code>x-wheelsai-plan-reset</code> is never sent for a trial: its count does
+          not start again.
+        </li>
+        <li>
+          Like any plan, a trial is held to its count and to 10 uses a minute, and has no limit for the day while
+          its free uses last.
+        </li>
+        <li>No warning email is sent for a free trial.</li>
+      </ul>
+      <p>
+        <strong>When its uses are gone</strong>, what happens depends on what you agreed to.
+      </p>
+      <ul>
+        <li>
+          If you agreed to no price per use, the trial stops: the next use answers <code>429</code>{" "}
+          <code>plan_used_up</code>, with a message that asks you to choose a plan or pay per use, the{" "}
+          <code>plans</code> on offer and the plan&apos;s usage headers. Nothing is charged. It carries no{" "}
+          <code>resetsAt</code>, no <code>retryAfterSeconds</code> and no <code>retry-after</code> header, because
+          the count does not start again. On <code>/v1</code> it is <code>plan_used_up</code> too, with the type{" "}
+          <code>insufficient_quota</code> and <code>x-should-retry: false</code>.
+        </li>
+        <li>
+          If you agreed to the listing&apos;s price per use yourself, each further use is charged that price from
+          your credits, like any use paid per use: charged when it is sent and refunded if no answer is delivered.
+          Its <code>billing.plan.use</code> is <code>extra</code> and <code>billing.chargedCents</code> is the
+          listing&apos;s price per use. These uses are held to the day&apos;s limit of a buyer who pays per use,
+          200 a day. If the listing&apos;s price went up since you agreed, the use answers <code>409</code>{" "}
+          <code>pricing_changed</code> and nothing is charged until you accept the new price.
+        </li>
+      </ul>
+      <p>
+        <strong>Agreeing to pay per use</strong> while a trial or a plan runs takes effect at once: send the
+        listing&apos;s price per use as <code>expected</code> to the start route. It answers <code>201</code>,
+        charges nothing and changes nothing of the trial or the plan. A price that went up after you agreed is
+        accepted only explicitly, with <code>acceptNewPricing: true</code> and the new price; without it the request
+        answers <code>200</code> and nothing is written.
+      </p>
+      <p>
+        <strong>When it ends.</strong> A trial ends when its 7 days are over, with uses left or not. Nothing is
+        charged. If you agreed to the listing&apos;s price per use and it has not gone up since, you go on paying
+        per use and <code>access</code> is <code>listing_pricing</code>. Otherwise <code>access</code> is{" "}
+        <code>plan_ended</code> with <code>trialEnded</code> <code>true</code>, and a use answers <code>402</code>{" "}
+        <code>plan_ended</code> with <code>terms</code> and <code>plans</code> to choose from (on <code>/v1</code>,{" "}
+        <code>marketplace_payment_required</code> with <code>reason</code> <code>plan_ended</code>). If you stop
+        using the agent while the trial runs, the trial is over at once, <code>access</code> is <code>none</code>,
+        and it cannot be started again.
+      </p>
+      <p>
+        <strong>A paid plan over a trial.</strong> A paid plan can be started while a trial runs, by the ordinary
+        start of a plan. It is charged as any start and a fresh 30 days begins; nothing of the trial is carried into
+        it. Moving up from a trial is refused (<code>trial_cannot_move</code>). A creator who stops offering the
+        trial stops new starts at once; a trial that is running finishes its 7 days.
       </p>
 
       <Endpoint id="paid-chat" method="POST" path="/api/a/{handle}/chat" auth="Session, or an API key with agents:use" title="Chat with an agent you pay for">
@@ -1601,7 +1769,7 @@ if reply.tool_calls:
         />
         <p>
           <code>billing.chargedCents</code> is what this use cost: the price per use, 0 inside a paid month and for a
-          use a plan includes, and the plan&apos;s extra price past its count. <code>billing.balanceCents</code> is your
+          use a plan or a free trial includes, and the plan&apos;s extra price past its count. <code>billing.balanceCents</code> is your
           credits after the use, or <code>null</code> when they could not be read just now.{" "}
           <code>billing.access</code> is <code>listing_pricing</code> or <code>subscribed</code>.{" "}
           <code>toolCalls</code> lists each tool the agent used and whether it worked (<code>ok</code>,{" "}
@@ -1620,6 +1788,7 @@ if reply.tool_calls:
   "plan": {
     "id": "7c1e4b02-...",
     "use": "included",
+    "trial": false,
     "includedUses": 500,
     "carriedUses": 0,
     "usedUses": 426,
@@ -1778,7 +1947,8 @@ print(reply.choices[0].message.content)`}
           <code>insufficient_quota</code> and <code>x-should-retry: false</code>, so an OpenAI client does not send the
           request again by itself. Its <code>retry-after</code> says how many seconds are left of the 30 days paid for:
           when the count starts again for a plan that renews (<code>resetsAt</code> is then set), and when the plan ends
-          for one that will not. While a renewal that is due is being retried it says one hour.
+          for one that will not. While a renewal that is due is being retried it says one hour. A free trial that is
+          used up sends no <code>retry-after</code>: its count does not start again.
         </p>
         <DocTable
           caption="Errors of a paid agent on /v1"
@@ -1790,7 +1960,7 @@ print(reply.choices[0].message.content)`}
           rows={[
             { status: <code>400</code>, code: <code>validation_failed</code>, when: "The request itself, or past the page's limits." },
             { status: <code>400</code>, code: <code>unsupported_parameter</code>, when: <>Tools, <code>tool_choice</code>, a system message or a tool message. Nothing was charged.</> },
-            { status: <code>402</code>, code: <code>marketplace_payment_required</code>, when: <>Not enough credits for this use (<code>reason</code> <code>insufficient_credits</code>; <code>priceCents</code> and <code>balanceCents</code> say how much), a subscription that ended (<code>subscription_lapsed</code>), or a plan that is over (<code>plan_ended</code>, with <code>terms</code> and <code>plans</code> to choose from).</> },
+            { status: <code>402</code>, code: <code>marketplace_payment_required</code>, when: <>Not enough credits for this use (<code>reason</code> <code>insufficient_credits</code>; <code>priceCents</code> and <code>balanceCents</code> say how much), a subscription that ended (<code>subscription_lapsed</code>), or a plan or a free trial that is over (<code>plan_ended</code>, with <code>terms</code> and <code>plans</code> to choose from).</> },
             { status: <code>403</code>, code: <><code>insufficient_scope</code>, <code>use_not_started</code></>, when: <>A key without <code>agents:use</code>; or you have not started using this agent (<code>terms</code> says what it asks).</> },
             { status: <code>403</code>, code: <><code>api_key_use_price_cap_exceeded</code>, <code>api_key_daily_cap_exceeded</code>, <code>api_key_spend_caps_missing</code></>, when: "The key's own caps." },
             { status: <code>403</code>, code: <code>not_a_member</code>, when: "You are no longer a member of the organization that pays for this agent." },
@@ -1798,7 +1968,7 @@ print(reply.choices[0].message.content)`}
             { status: <code>409</code>, code: <code>pricing_changed</code>, when: <>The price went up or the pricing model changed since you agreed; <code>terms</code> says what it is now.</> },
             { status: <code>409</code>, code: <><code>own_agent</code>, <code>not_for_sale</code></>, when: <>Your own agent; or an agent whose use is free, not offered, or read through results (<code>reason</code> says which).</> },
             { status: <code>429</code>, code: <code>rate_limit_exceeded</code>, when: <>Your limit or the agent&apos;s, with <code>retry-after</code>.</> },
-            { status: <code>429</code>, code: <code>plan_used_up</code>, when: <>Every use of your plan is gone and it stops until it renews. Nothing was charged. Type <code>insufficient_quota</code>, <code>x-should-retry: false</code>, the plan&apos;s usage headers, <code>plans</code>, and <code>resetsAt</code> when the plan will renew.</> },
+            { status: <code>429</code>, code: <code>plan_used_up</code>, when: <>Every use of your plan is gone and it stops until it renews, or every use of your free trial is gone and you agreed to no price per use. Nothing was charged. Type <code>insufficient_quota</code>, <code>x-should-retry: false</code>, the plan&apos;s usage headers, <code>plans</code>, and <code>resetsAt</code> when the plan will renew.</> },
             { status: <code>499</code>, code: <code>client_closed_request</code>, when: "You closed the connection before the answer arrived. The charge was refunded." },
             { status: <code>502</code>, code: <code>answer_withheld</code>, when: <>The answer could not be shown. The charge was refunded (<code>refundedCents</code>).</> },
             { status: <code>502</code>, code: <code>upstream_error</code>, when: <>The agent could not answer. The charge was refunded; a retry is a new charge, refunded again if it fails.</> },
@@ -1821,16 +1991,20 @@ print(reply.choices[0].message.content)`}
           { key: "when", label: "Sent" },
         ]}
         rows={[
-          { header: <code>x-wheelsai-charged-cents</code>, says: "What this use cost, in cents: 0 for a use a plan includes and inside a paid month.", when: "On every paid answer." },
+          { header: <code>x-wheelsai-charged-cents</code>, says: "What this use cost, in cents: 0 for a use a plan or a free trial includes and inside a paid month.", when: "On every paid answer." },
           { header: <code>x-wheelsai-balance-cents</code>, says: "Your credits after the use, in cents.", when: "On every paid answer, unless your credits could not be read just now." },
-          { header: <code>x-wheelsai-plan</code>, says: "The id of the plan you are on.", when: "On a plan." },
-          { header: <code>x-wheelsai-plan-limit</code>, says: "The uses of these 30 days: included plus carried.", when: "On a plan." },
-          { header: <code>x-wheelsai-plan-used</code>, says: "Uses taken in these 30 days, this one among them.", when: "On a plan." },
-          { header: <code>x-wheelsai-plan-remaining</code>, says: "Uses left.", when: "On a plan." },
-          { header: <code>x-wheelsai-plan-reset</code>, says: "When the count starts again, an ISO time.", when: "On a plan that will renew." },
-          { header: <code>x-wheelsai-plan-warning</code>, says: <><code>85</code> or <code>100</code>.</>, when: "On a plan, from 85% of its uses." },
+          { header: <code>x-wheelsai-plan</code>, says: "The id of the plan you are on, or of your free trial.", when: "On a plan or a free trial." },
+          { header: <code>x-wheelsai-plan-limit</code>, says: "The uses of these 30 days: included plus carried.", when: "On a plan or a free trial." },
+          { header: <code>x-wheelsai-plan-used</code>, says: "Uses taken in these 30 days, this one among them.", when: "On a plan or a free trial." },
+          { header: <code>x-wheelsai-plan-remaining</code>, says: "Uses left.", when: "On a plan or a free trial." },
+          { header: <code>x-wheelsai-plan-reset</code>, says: "When the count starts again, an ISO time.", when: "On a plan that will renew. Never on a free trial." },
+          { header: <code>x-wheelsai-plan-warning</code>, says: <><code>85</code> or <code>100</code>.</>, when: "On a plan or a free trial, from 85% of its uses." },
         ]}
       />
+      <p>
+        A free trial sends the same headers as a plan, <code>x-wheelsai-plan-warning</code> included, with the uses
+        of its 7 days in place of the 30 days. It never sends <code>x-wheelsai-plan-reset</code>.
+      </p>
       <CodeBlock
         language="http"
         code={`HTTP/1.1 200 OK
@@ -1869,6 +2043,7 @@ x-wheelsai-plan-warning: 85`}
           { who: "Per use, with no plan", minute: "10 uses", day: "200 uses" },
           { who: "By the month", minute: "10 uses", day: "200 uses" },
           { who: "On a plan", minute: "10 uses", day: "No daily limit: the plan's count for its 30 days takes its place, for included and extra uses alike." },
+          { who: "On a free trial", minute: "10 uses", day: "No daily limit for its free uses: the trial's count takes its place. A use past them, paid per use, counts toward 200 uses." },
         ]}
       />
       <p>
@@ -1895,7 +2070,7 @@ x-wheelsai-plan-warning: 85`}
           { status: <code>401</code>, code: "", when: "Not signed in." },
           { status: <code>402</code>, code: <code>insufficient_credits</code>, when: <>Not enough credits for this use. <code>priceCents</code> and <code>balanceCents</code> say how much. Nothing was charged.</> },
           { status: <code>402</code>, code: <code>subscription_lapsed</code>, when: "The subscription ended or its renewal did not go through." },
-          { status: <code>402</code>, code: <code>plan_ended</code>, when: <>Your plan is over and you have not agreed to the listing&apos;s price per use. <code>terms</code> says what the listing asks and <code>plans</code> the plans on offer: choose a plan or pay per use.</> },
+          { status: <code>402</code>, code: <code>plan_ended</code>, when: <>Your plan or your free trial is over and you have not agreed to the listing&apos;s price per use. <code>terms</code> says what the listing asks and <code>plans</code> the plans on offer: choose a plan or pay per use.</> },
           { status: <code>403</code>, code: <code>missing_scope</code>, when: <>A key without <code>agents:use</code>.</> },
           { status: <code>403</code>, code: <code>use_not_started</code>, when: <>You have not started using this agent. <code>terms</code> and <code>access</code> say what it asks.</> },
           { status: <code>403</code>, code: <><code>api_key_use_price_cap_exceeded</code>, <code>api_key_daily_cap_exceeded</code>, <code>api_key_spend_caps_missing</code></>, when: "The key's own caps: the price of one use is over the most one use may cost, the day's allowance is used, or the key has no caps." },
@@ -1906,7 +2081,7 @@ x-wheelsai-plan-warning: 85`}
           { status: <code>413</code>, code: <code>input_too_large</code>, when: "Your answers are too long." },
           { status: <code>422</code>, code: <code>input_invalid</code>, when: <>Some answers need another look; <code>details</code> lists them.</> },
           { status: <code>429</code>, code: <code>rate_limited</code>, when: <>Your limit or the agent&apos;s, with <code>scope</code> (<code>org</code> or <code>agent</code>) and <code>retryAfterSeconds</code>.</> },
-          { status: <code>429</code>, code: <code>plan_used_up</code>, when: <>Every use of your plan is gone and it stops until it renews. Nothing was charged and no use was taken. With the plan&apos;s <a href="#paid-headers">usage headers</a>, <code>plans</code> (a bigger one may be among them), <code>retryAfterSeconds</code>, and <code>resetsAt</code> when the plan will renew.</> },
+          { status: <code>429</code>, code: <code>plan_used_up</code>, when: <>Every use of your plan is gone and it stops until it renews. Nothing was charged and no use was taken. With the plan&apos;s <a href="#paid-headers">usage headers</a>, <code>plans</code> (a bigger one may be among them), <code>retryAfterSeconds</code>, and <code>resetsAt</code> when the plan will renew. A <a href="#paid-trial">free trial</a> whose uses are gone answers this too, for a buyer who agreed to no price per use, with neither of those two.</> },
           { status: <code>429</code>, code: <code>too_many_refunds</code>, when: "Several of your answers could not be delivered today. Try again tomorrow." },
           { status: <code>499</code>, code: <code>client_closed_request</code>, when: "You closed the connection before the answer arrived. The charge was refunded." },
           { status: <code>502</code>, code: <><code>model_error</code>, <code>answer_withheld</code></>, when: <>The agent could not answer, or its answer could not be shown. <code>refundedCents</code> says what was given back.</> },
@@ -1918,7 +2093,8 @@ x-wheelsai-plan-warning: 85`}
         <code>GET /api/capabilities</code> also answers <code>paidUse</code>:{" "}
         <code>&#123; perBuyerPerMinute, perBuyerPerDay, minPricePerUseCents, freeModelDailyAllowance &#125;</code>. These are the
         limits above, the smallest price of one use (5 cents), and how many answers a day your organization gets on
-        WheelsAI&apos;s models (<code>null</code> when it cannot be read).
+        WheelsAI&apos;s models (<code>null</code> when it cannot be read). It also carries the numbers of a free
+        trial: <code>maxTrialUses</code>, the most uses one can include, and <code>trialDays</code>, how long it lasts.
       </p>
 
       <h2 id="playground">Playground</h2>

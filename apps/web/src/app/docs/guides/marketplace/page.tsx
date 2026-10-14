@@ -15,6 +15,7 @@ const toc = [
   { id: "sell", title: "Sell from the agent's page" },
   { id: "who-can-use", title: "Who can use it?", sub: true },
   { id: "plans", title: "Plans", sub: true },
+  { id: "free-trial", title: "A free trial", sub: true },
   { id: "earn", title: "What you earn", sub: true },
   { id: "guaranteed", title: "Guaranteed delivery", sub: true },
   { id: "model-stops", title: "When the model stops", sub: true },
@@ -29,6 +30,7 @@ const toc = [
   { id: "installs", title: "What buyers get" },
   { id: "using", title: "Using an agent", sub: true },
   { id: "on-a-plan", title: "On a plan", sub: true },
+  { id: "on-a-trial", title: "On a free trial", sub: true },
   { id: "owning", title: "Owning a copy", sub: true },
   { id: "use-or-copies", title: "Sell use, or sell copies" },
   { id: "payouts", title: "Getting paid" },
@@ -135,6 +137,47 @@ export default function MarketplaceGuidePage() {
       <p>
         Over the API, send the whole set with{" "}
         <Link href="/docs/api/marketplace#plans"><code>PUT /api/marketplace/listings/&#123;id&#125;/plans</code></Link>.
+      </p>
+
+      <h3 id="free-trial">A free trial</h3>
+      <p>
+        An agent sold with <strong>Pay per use</strong> can also offer one free trial, beside its plans or without
+        any. Under <strong>Plans</strong> on the Sell tab, switch on <strong>Offer a free trial</strong> and fill in{" "}
+        <strong>Uses in the trial</strong>: from 1 to 50. A trial lasts 7 days. It has no price and no name of its
+        own: buyers see it as <strong>Free trial</strong>.
+      </p>
+      <ul>
+        <li>
+          A buyer can try it once, for 7 days. Nothing is charged, and you are not paid for these uses. Your
+          agent answers them as it answers any use: on your own model key or a model you run yourself, each
+          answer costs you what any answer costs there. A trial includes at most 50 uses.
+        </li>
+        <li>
+          Buyers see it on the agent&apos;s page, above your plans: &quot;Try 20 uses free for 7 days. Nothing is
+          charged and it does not renew.&quot; It is not one of your four plans.
+        </li>
+        <li>
+          A buyer&apos;s organization starts it once for your agent, and only after it has added credits to its
+          account at least once. That keeps a trial from being taken again and again through new accounts.
+        </li>
+        <li>
+          When its uses are gone or its 7 days are over, the buyer chooses a plan or pays per use. A buyer who
+          agreed to your price per use, before or during the trial, pays it for each use after the free ones.
+        </li>
+        <li>
+          Changing the number of uses changes it for people who start the trial from then on. Switching it off
+          stops offering the trial when you save: nobody new can start it, and the people who are on it keep it
+          until its 7 days end.
+        </li>
+        <li>
+          The free trial is not <Link href="/docs/guides/web-chat-widget#try-it">Try it</Link>, the free preview
+          chat every published listing has. Try it is open to anyone before they buy and runs on a free model; a
+          free trial is use of your agent itself, started once by a buyer&apos;s organization.
+        </li>
+      </ul>
+      <p>
+        Over the API, the trial is one more entry of the set sent to{" "}
+        <Link href="/docs/api/marketplace#free-trial"><code>PUT /api/marketplace/listings/&#123;id&#125;/plans</code></Link>.
       </p>
 
       <h3 id="earn">What you earn</h3>
@@ -409,6 +452,10 @@ curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/publish"
           30 days from your credits and gives you a number of uses for them; see <a href="#on-a-plan">On a plan</a>.
         </li>
         <li>
+          <strong>On a free trial:</strong> a listing sold per message or per run can offer a free trial: some uses
+          for 7 days, with nothing charged; see <a href="#on-a-trial">On a free trial</a>.
+        </li>
+        <li>
           <strong>Monthly:</strong> subscribing charges the first 30 days from your credits, and the same price every 30
           days after that. For an agent that runs on its own, a subscription lets you read its results on its page.
         </li>
@@ -485,6 +532,52 @@ curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/publish"
         <Link href="/docs/api/marketplace#use">the start route</Link>, and every paid answer carries{" "}
         <Link href="/docs/api/agents#paid-headers">usage headers</Link> that say what it cost and how much of the plan
         is used.
+      </p>
+
+      <h3 id="on-a-trial">On a free trial</h3>
+      <p>
+        When a creator offers one, the agent&apos;s page says so above the plans: &quot;Try 20 uses free for 7 days.
+        Nothing is charged and it does not renew.&quot; Choose <strong>Start the free trial</strong> and confirm.
+        An owner or admin starts it.
+      </p>
+      <ul>
+        <li>
+          <strong>Who can start it.</strong> Your organization starts the free trial of an agent once. It must have
+          added credits to its account at least once, by card, from a wallet or by a deposit: bonus credits do not
+          count. The trial itself costs nothing. You cannot start it while a plan or a paid month for that agent is
+          running.
+        </li>
+        <li>
+          <strong>The count.</strong> Each message or run takes one of the trial&apos;s uses. The page, and every
+          answer of the API, says how many are left. A use that is not answered is given back to the count.
+        </li>
+        <li>
+          <strong>When the uses are gone.</strong> The trial stops and nothing is charged: you choose a plan or
+          agree to the price per use. If you agreed to the listing&apos;s price per use, before or during the
+          trial, each use after the free ones is charged that price from your credits. If the creator raised the
+          price since, you are asked to accept the new price first.
+        </li>
+        <li>
+          <strong>When the 7 days are over.</strong> The trial ends, nothing is charged and it does not renew. You
+          choose a plan or pay per use to keep using the agent. If you agreed to the listing&apos;s price per use, before or
+          during the trial, you go on paying per use. If the creator raised the price since, you are asked to
+          accept the new price first.
+        </li>
+        <li>
+          <strong>Starting a plan.</strong> You can start a plan at any time during the trial. It is charged as any
+          plan and its 30 days start then. The uses left of the trial are not carried into it.
+        </li>
+        <li>
+          <strong>Stopping.</strong> <strong>Stop using</strong>, under <strong>Marketplace</strong>,{" "}
+          <strong>Installed</strong>, ends the trial at once. It cannot be started again.
+        </li>
+        <li>
+          <strong>No emails.</strong> The warnings a plan sends at 85% and at 100% are not sent for a free trial.
+        </li>
+      </ul>
+      <p>
+        From code, a trial is started with <Link href="/docs/api/marketplace#use">the start route</Link>; see{" "}
+        <Link href="/docs/api/agents#paid-trial">the free trial</Link> in the reference.
       </p>
 
       <h3 id="owning">Owning a copy</h3>

@@ -69,10 +69,18 @@ export default function MarketplaceApiPage() {
           <code>copies</code> (buyers install their own copy). <code>unit</code> is what one payment buys:{" "}
           <code>message</code>, <code>run</code> or <code>month</code>, and <code>null</code> for a free listing or a copy.{" "}
           <code>agent.handle</code> is the name in the agent&apos;s page address, <code>/a/&#123;handle&#125;</code>, where a
-          listing that sells use is used (<code>null</code> when the agent has no page). A listing read here also carries{" "}
+          listing that sells use is used (<code>null</code> when the agent has no page). A listing read by its slug also carries{" "}
           <code>plans</code>: the <a href="#plans">plans</a> it offers a buyer, each{" "}
           <code>&#123; id, name, priceCents, includedUses, extraUsePriceCents &#125;</code>, in the order they are shown,
-          and empty when it offers none. In a search, the featured row and a publisher&apos;s profile each listing carries{" "}
+          and empty when it offers none. It also carries <code>freeTrial</code>: the{" "}
+          <Link href="/docs/api/agents#paid-trial">free trial</Link> a buyer&apos;s organization can start once,{" "}
+          <code>&#123; id, includedUses, days &#125;</code>, or <code>null</code> when the listing offers none. It is
+          not <code>trial</code>, which every listing carries as <code>&#123; enabled &#125;</code> and which says
+          whether <Link href="/docs/guides/web-chat-widget#try-it">Try it</Link>, the listing&apos;s free preview
+          chat for anyone, is on. A listing read by its id carries neither <code>plans</code> nor{" "}
+          <code>freeTrial</code>: read it by its slug, or ask{" "}
+          <Link href="/docs/api/agents#paid-access">the access answer</Link>. In a
+          search, the featured row and a publisher&apos;s profile each listing carries{" "}
           <code>plansFromCents</code> instead: the smallest price for 30 days among its plans, or <code>null</code>. Other
           public reads:
         </p>
@@ -163,7 +171,8 @@ export default function MarketplaceApiPage() {
           and <code>&#123; since &#125;</code> while the model its agent runs on is not running; <code>since</code> is when
           that was first seen (an ISO date), or <code>null</code> when it has not been noted yet. See{" "}
           <Link href="/docs/guides/marketplace#model-stops">When the model stops</Link>. Each also carries{" "}
-          <code>plans</code>, the plans it has on offer as <a href="#plans">the route below</a> answers them.
+          <code>plans</code>, the plans it has on offer as <a href="#plans">the route below</a> answers them, its free
+          trial first when it offers one.
         </p>
       </Endpoint>
 
@@ -172,19 +181,20 @@ export default function MarketplaceApiPage() {
           A listing that sells use per request can offer up to four plans: a price for 30 days, a number of uses
           included, and what happens when they run out. The body is the whole set, and it replaces what the listing
           has: a plan sent with its <code>id</code> is changed in place, a plan sent without one is new, and a plan
-          that ends is named in <code>ended</code>.
+          that ends is named in <code>ended</code>. The listing&apos;s one free trial is set in the same body, as one
+          more entry of <code>plans</code>; see <a href="#free-trial">below</a>.
         </p>
         <Fields
           fields={[
-            { name: "plans", type: "array", required: true, description: "The plans the listing offers from now on, in the order buyers see them. At most 4. May be empty." },
-            { name: "ended", type: "uuid[]", description: "The ids of the plans that end. Leave it out when none does. An id that is no longer on offer is no error." },
+            { name: "plans", type: "array", required: true, description: "The plans the listing offers from now on, in the order buyers see them. At most 4. One free trial can be sent beside them. May be empty." },
+            { name: "ended", type: "uuid[]", description: "The ids of the plans that end, the free trial's among them when it stops being offered. Leave it out when none does. An id that is no longer on offer is no error." },
           ]}
         />
         <Fields
           title="A plan"
           fields={[
             { name: "id", type: "uuid", description: "Set to change a plan in place. Left out for a new plan." },
-            { name: "kind", type: "string", required: true, description: <><code>paid</code>.</> },
+            { name: "kind", type: "string", required: true, description: <><code>paid</code>, or <code>trial</code> for <a href="#free-trial">the free trial</a>.</> },
             { name: "name", type: "string", required: true, description: "1 to 40 characters." },
             { name: "priceCents", type: "integer", required: true, description: "What 30 days cost: at least 100, and at least 1 cent for each included use, so $9.00 includes at most 900 uses." },
             { name: "includedUses", type: "integer", required: true, description: "1 to 100,000." },
@@ -209,6 +219,60 @@ export default function MarketplaceApiPage() {
           <code>subscribers</code> is how many subscriptions are on the plan. <code>GET /api/marketplace/my-listings</code>{" "}
           answers the same under each listing.
         </p>
+        <p id="free-trial">
+          <strong>The free trial.</strong> A listing that can have plans can offer one free trial: a number of uses a
+          buyer&apos;s organization gets once, for 7 days, at no price. It is one more entry of <code>plans</code>,
+          and it is not one of the four. It has no name of its own: it is always called <code>Free trial</code>, and a{" "}
+          <code>name</code> that is sent is not kept.
+        </p>
+        <Fields
+          title="The free trial, as an entry of plans"
+          fields={[
+            { name: "id", type: "uuid", description: "Set to change the trial in place. Left out to start offering one." },
+            { name: "kind", type: "string", required: true, description: <><code>trial</code>.</> },
+            { name: "priceCents", type: "integer", required: true, description: "0. A free trial has no price." },
+            { name: "includedUses", type: "integer", required: true, description: "1 to 50." },
+            { name: "extraUsePriceCents", type: "null", required: true, description: <><code>null</code>, and it must be sent. A free trial has no price for an extra use.</> },
+          ]}
+        />
+        <CodeBlock
+          language="bash"
+          code={`curl -s -X PUT "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/plans" \\
+  -H "Authorization: Bearer $WHEELSAI_API_KEY" -H "Content-Type: application/json" \\
+  -d '{
+    "plans": [
+      { "kind": "trial", "priceCents": 0, "includedUses": 20, "extraUsePriceCents": null },
+      { "id": "'"$STARTER_PLAN_ID"'", "kind": "paid", "name": "Starter", "priceCents": 900, "includedUses": 500, "extraUsePriceCents": 5 }
+    ],
+    "ended": []
+  }'`}
+        />
+        <ul>
+          <li>
+            The answer and <code>GET /api/marketplace/my-listings</code> carry the trial first among{" "}
+            <code>plans</code>, with <code>kind</code> <code>trial</code>, <code>name</code>{" "}
+            <code>Free trial</code>, <code>priceCents</code> 0 and <code>extraUsePriceCents</code>{" "}
+            <code>null</code>. Its <code>subscribers</code> is how many trials are running now.
+          </li>
+          <li>
+            Change how many uses it includes by sending it with its <code>id</code>. Stop offering it by naming its{" "}
+            <code>id</code> in <code>ended</code>. Like a plan, a trial on offer that is in neither list refuses the
+            whole save with <code>409</code> <code>plans_changed</code>.
+          </li>
+          <li>
+            Stopping the offer stops new starts at once. People who are on the trial keep it until its 7 days end,
+            with the uses they started with.
+          </li>
+          <li>
+            Nothing is charged for a trial&apos;s uses and you are not paid for them. A buyer who agreed to your
+            price per use pays it for each use past the trial&apos;s count, and that is a sale like any other.
+          </li>
+          <li>
+            What a buyer reads never lists the trial among <code>plans</code>: it is told beside them, as{" "}
+            <code>freeTrial</code> on <a href="#get-listing">a listing</a> and as <code>trial</code> on{" "}
+            <Link href="/docs/api/agents#paid-trial">the reads of an agent you pay for</Link>.
+          </li>
+        </ul>
         <ul>
           <li>
             Ending a plan is said, never implied. A plan on offer that is neither in <code>plans</code> nor in{" "}
@@ -229,7 +293,7 @@ export default function MarketplaceApiPage() {
             { key: "when", label: "When" },
           ]}
           rows={[
-            { status: "400", error: <code>validation_failed</code>, when: <><code>message</code> is the first problem and <code>fields</code> has a sentence for each field, keyed as <code>plans[0].priceCents</code>: more than 4 plans, a name that is missing or too long, a price under $1.00, uses out of range or too many for the price, an extra price under $0.05, a plan that is in the list twice or in both lists, an <code>id</code> that is no longer on the listing, a <code>kind</code> other than <code>paid</code>.</> },
+            { status: "400", error: <code>validation_failed</code>, when: <><code>message</code> is the first problem and <code>fields</code> has a sentence for each field, keyed as <code>plans[0].priceCents</code>: more than 4 plans, a name that is missing or too long, a price under $1.00, uses out of range or too many for the price, an extra price under $0.05, a plan that is in the list twice or in both lists, an <code>id</code> that is no longer on the listing, a <code>kind</code> other than <code>paid</code> or <code>trial</code>. For a free trial: two of them in one set, a price other than 0, a price for an extra use, uses outside 1 to 50, and an <code>id</code> sent as the other kind (a plan cannot be turned into a free trial, or a free trial into a plan).</> },
             { status: "403", error: "", when: "A member who is not an owner or admin." },
             { status: "404", error: <code>listing_not_found</code>, when: "No listing with that id in your organization." },
             { status: "409", error: <code>plans_not_available</code>, when: "The listing cannot have plans: it sells copies, it is not sold per use, or its agent runs on its own. The message says which." },
@@ -255,13 +319,14 @@ export default function MarketplaceApiPage() {
           <code>/a/&#123;handle&#125;</code>. A price per use charges nothing now; each use is charged when it is sent. A monthly
           price charges the first 30 days from your credits now. An API key needs the <code>marketplace:install</code> scope
           granted by name (<code>403</code> otherwise); see <Link href="/docs/api/jobs#keys">API keys that can spend</Link>.
-          The same route starts a plan, and moves you up to a bigger one.
+          The same route starts a plan, moves you up to a bigger one, and starts a listing&apos;s{" "}
+          <Link href="/docs/api/agents#paid-trial">free trial</Link>.
         </p>
         <Fields
           fields={[
             { name: "expected", type: "object", description: <>To agree to the listing&apos;s price: the pricing you were shown, <code>pricingModel</code> and, as it applies, <code>pricePerRequestCents</code> or <code>monthlyPriceCents</code>. It is your consent: without it, and without <code>plan</code>, nothing is agreed to.</> },
             { name: "acceptNewPricing", type: "boolean", description: "Send true to continue on new terms after the creator changed the price." },
-            { name: "plan", type: "object", description: <>To start a plan: the plan you were shown, whole, <code>&#123; id, priceCents, includedUses, extraUsePriceCents &#125;</code> (<code>extraUsePriceCents</code> is <code>null</code> when the plan stops). Its 30 days are charged from your credits now. Starting a plan agrees to no price per use.</> },
+            { name: "plan", type: "object", description: <>To start a plan: the plan you were shown, whole, <code>&#123; id, priceCents, includedUses, extraUsePriceCents &#125;</code> (<code>extraUsePriceCents</code> is <code>null</code> when the plan stops). Its 30 days are charged from your credits now. Starting a plan agrees to no price per use. To start the listing&apos;s free trial, send the trial&apos;s own terms here: <code>&#123; id, priceCents: 0, includedUses, extraUsePriceCents: null &#125;</code>. Nothing is charged.</> },
             { name: "switchNow", type: "true", description: <>With <code>plan</code>: move up to that bigger plan now. Its full price is charged, a fresh 30 days starts and the uses you had left are carried into them once.</> },
           ]}
         />
@@ -270,9 +335,17 @@ export default function MarketplaceApiPage() {
           using the agent or the listing is free, with{" "}
           <code>&#123; access, acceptedPricing, subscription, agent: &#123; handle, name, agentKind &#125; &#125;</code>.{" "}
           <code>acceptedPricing</code> is <code>&#123; pricingModel, pricePerRequestCents, acceptedAt &#125;</code>, or{" "}
-          <code>null</code> when no price was agreed. A plan start and a move always answer <code>201</code>; their{" "}
-          <code>subscription</code> carries <code>plan</code>, the count as{" "}
+          <code>null</code> when no price was agreed. A plan start, a move and a start of a free trial always answer{" "}
+          <code>201</code>; their <code>subscription</code> carries <code>plan</code>, the count as{" "}
           <Link href="/docs/api/agents#paid-plans">the paid-use reference</Link> describes it.
+        </p>
+        <p>
+          While a plan or a free trial runs, sending the listing&apos;s price per use as <code>expected</code> is your
+          agreement to it. It takes effect at once and answers <code>201</code>: nothing is charged and nothing of the
+          plan or the trial changes. It is the price you pay per use when the plan or the trial is over, and for each
+          use past the uses of a free trial. If the price went up after you agreed, the new price is accepted only
+          with <code>acceptNewPricing: true</code>; without it the request answers <code>200</code> and nothing is
+          written.
         </p>
         <ul>
           <li><code>400</code> <code>expected_terms_required</code>: send the price, or the plan, you were shown.</li>
@@ -282,6 +355,16 @@ export default function MarketplaceApiPage() {
             is not what you were shown; <code>409</code> <code>already_on_plan</code>, <code>not_on_plan</code>,{" "}
             <code>same_plan</code> and <code>not_a_bigger_plan</code>. Nothing is charged on any of them; each is
             explained in <Link href="/docs/api/agents#paid-plans">the paid-use reference</Link>.
+          </li>
+          <li>
+            With a free trial as <code>plan</code>: <code>409</code> <code>trial_already_used</code> (your
+            organization started this listing&apos;s trial before), <code>409</code>{" "}
+            <code>trial_needs_credits</code> (your organization has never added credits), <code>409</code>{" "}
+            <code>already_on_plan</code>, and <code>409</code> <code>pricing_changed</code> with{" "}
+            <code>pricing</code>, <code>plans</code> and <code>trial</code>, the trial on offer now or{" "}
+            <code>null</code>. With <code>switchNow</code> from a free trial: <code>409</code>{" "}
+            <code>trial_cannot_move</code>; start the plan you want without <code>switchNow</code>. Nothing is
+            written on any of them; see <Link href="/docs/api/agents#paid-trial">the free trial</Link>.
           </li>
           <li>
             <code>402</code> <code>insufficient_credits</code> with <code>requiredCents</code>: a monthly price, or a
@@ -326,6 +409,13 @@ export default function MarketplaceApiPage() {
           code={`curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/use" \\
   -H "Authorization: Bearer $WHEELSAI_API_KEY" -H "Content-Type: application/json" \\
   -d '{ "plan": { "id": "'"$PLAN_ID"'", "priceCents": 900, "includedUses": 500, "extraUsePriceCents": 5 } }'`}
+        />
+        <p>Starting a free trial:</p>
+        <CodeBlock
+          language="bash"
+          code={`curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/use" \\
+  -H "Authorization: Bearer $WHEELSAI_API_KEY" -H "Content-Type: application/json" \\
+  -d '{ "plan": { "id": "'"$TRIAL_ID"'", "priceCents": 0, "includedUses": 20, "extraUsePriceCents": null } }'`}
         />
       </Endpoint>
 
@@ -390,17 +480,26 @@ export default function MarketplaceApiPage() {
           <code>agent</code> is <code>&#123; handle, name, agentKind &#125;</code>; <code>clonedAgentId</code> is the copy&apos;s id
           for a copy and <code>null</code> for a use, which has no copy. <code>access</code> says where it stands:{" "}
           <code>subscribed</code>, <code>listing_pricing</code>, <code>subscription_lapsed</code> and{" "}
-          <code>pricing_changed</code> for either; <code>none</code> (not started), <code>plan_ended</code> (a plan that is
-          over, with no price per use agreed to) and <code>not_offered</code> (the listing no longer sells use) for a use. A
+          <code>pricing_changed</code> for either; <code>none</code> (not started), <code>plan_ended</code> (a plan or a
+          free trial that is over, with no price per use agreed to) and <code>not_offered</code> (the listing no longer
+          sells use) for a use. A
           subscription&apos;s <code>endReason</code> is <code>pricing_changed</code>, <code>listing_archived</code>,{" "}
-          <code>plan_ended</code> when its creator ended the plan, or <code>use_ended</code> when the listing stopped
-          selling use: it then ends at the close of the 30 days already paid for.
+          <code>plan_ended</code> when its creator ended the plan or when a free trial reached the end of its 7 days
+          (<code>trialEnded</code> on the install tells the two apart), or <code>use_ended</code> when the listing
+          stopped selling use: it then ends at the close of the 30 days already paid for.
         </p>
         <p>
           In <code>my-installs</code>, a use also carries what a buyer needs to see about plans: its{" "}
           <code>listing.plans</code> is the plans on offer, and its <code>subscription.plan</code> is the plan it is on
           while that gives uses (<code>null</code> otherwise). Beside <code>installs</code>, <code>canSpend</code> says
           whether this caller may start, move up or resume.
+        </p>
+        <p>
+          Each entry of <code>installs</code> also carries <code>trialEnded</code>, a boolean right after{" "}
+          <code>access</code>: <code>true</code> only when <code>access</code> is <code>plan_ended</code> and what
+          ended was your organization&apos;s own free trial, not a paid plan. It is always <code>false</code> for a
+          copy. A trial that is running is its <code>subscription.plan</code>, with <code>trial</code>{" "}
+          <code>true</code>. <code>install-status</code> carries no <code>trialEnded</code>.
         </p>
       </Endpoint>
 
@@ -421,7 +520,8 @@ export default function MarketplaceApiPage() {
           period: access, and a plan&apos;s uses, stay until then and nothing more is charged. Any member can cancel.{" "}
           <code>.../resume</code> undoes that; it turns the charges back on, so it needs an owner or admin, or a key
           granted <code>marketplace:install</code> by name. Both answer <code>&#123; subscription &#125;</code>, and{" "}
-          <code>404</code> when there is no subscription to change.
+          <code>404</code> when there is no subscription to change. A free trial is never renewed: cancelling its
+          renewal changes nothing, and resuming it answers <code>404</code>.
         </p>
         <p>
           Renewals are charged from credits once per 30-day period, at the price that was agreed, and a plan&apos;s count
@@ -448,9 +548,11 @@ export default function MarketplaceApiPage() {
       "slug": "support-bot",
       "handle": "support-bot",
       "access": "subscribed",
+      "trialEnded": false,
       "plan": {
         "id": "7c1e4b02-...",
         "name": "Starter",
+        "trial": false,
         "includedUses": 500,
         "carriedUses": 0,
         "usedUses": 425,
@@ -459,6 +561,7 @@ export default function MarketplaceApiPage() {
         "resetsAt": "2026-11-12T09:30:00.000Z",
         "warning": 85
       },
+      "perUseAfterTrial": null,
       "periodEndsAt": "2026-11-12T09:30:00.000Z",
       "renewalPastDue": false,
       "extraThisPeriod": { "uses": 0, "cents": 0 },
@@ -474,8 +577,25 @@ export default function MarketplaceApiPage() {
             <code>plan</code> is <code>null</code> when you are on none.
           </li>
           <li>
+            <code>trialEnded</code> is always present. It is <code>true</code> only when <code>access</code> is{" "}
+            <code>plan_ended</code> and what ended was your organization&apos;s own{" "}
+            <Link href="/docs/api/agents#paid-trial">free trial</Link>. It is <code>false</code> for a buyer who agreed
+            to pay per use and so goes on after the trial: their <code>access</code> is{" "}
+            <code>listing_pricing</code>.
+          </li>
+          <li>
+            <code>perUseAfterTrial</code> is always present, as{" "}
+            <code>&#123; priceCents, unit &#125;</code> or <code>null</code>; <code>unit</code> is{" "}
+            <code>message</code> or <code>run</code>. It is set only on a row on a running free trial, with free uses
+            left or not, and only when you are charged per use once the free uses are gone: it is what one such use
+            is charged. <code>priceCents</code> is the listing&apos;s price per use now, never the price you agreed
+            to. It is <code>null</code> when you agreed to no price per use, when the listing asks more than you
+            agreed to, and on every row that is not on a free trial. It says what a use is charged, not that the
+            agent answers: a listing that is paused still refuses.
+          </li>
+          <li>
             <code>periodEndsAt</code> is the end of the 30 days paid for, and the day a plan ends when it will not renew
-            (its <code>plan</code> then has no <code>resetsAt</code>). <code>renewalPastDue</code> is <code>true</code>{" "}
+            (its <code>plan</code> then has no <code>resetsAt</code>). On a free trial it is the day the trial ends. <code>renewalPastDue</code> is <code>true</code>{" "}
             while a renewal that did not go through is being retried. Both are <code>null</code> and{" "}
             <code>false</code> with no plan.
           </li>

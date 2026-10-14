@@ -117,7 +117,9 @@ export {
   type AgentInstall,
   type AgentListing,
   type AgentReview,
+  type CreateAgentListingInput,
   type CreateListingInput,
+  type CreateWorkflowListingInput,
   type CreatorPayout,
   type PayoutLimits,
   type PayoutMethod,
@@ -128,6 +130,7 @@ export {
   type InstallAccess,
   type LicenceAgent,
   type ListingCategory,
+  type ListingProductKind,
   type ListingSells,
   type ListingStatus,
   type ListingSubscription,
@@ -139,6 +142,7 @@ export {
   type PlanTerms,
   type SubscriptionPlan,
   type StartedUsing,
+  type StoredListing,
   type TrialOffer,
   type TrialPlanInput,
   type Pagination,
@@ -165,6 +169,16 @@ export {
   type UseAccessKind,
 } from "./use.js";
 export {
+  type WorkflowAccessKind,
+  type WorkflowAccessState,
+  type WorkflowApiEndpoint,
+  type WorkflowApiPage,
+  type WorkflowApiRefusal,
+  type WorkflowPage,
+  type WorkflowRunRefusal,
+  type WorkflowRunResult,
+} from "./useWorkflow.js";
+export {
   inferenceResource,
   type ChatMessage,
   type ChatTool,
@@ -174,6 +188,7 @@ export {
   type ChatCompletionResponse,
   type ChatCompletionExtension,
   type PaidAgentCompletionExtension,
+  type PaidWorkflowCompletionExtension,
   type ModelEntry,
 } from "./inference.js";
 export {
@@ -220,6 +235,7 @@ export {
   platformResource,
   skillsResource,
   type Capabilities,
+  type PaidUseCapabilities,
   type OverallStatus,
   type PlatformStatus,
   type PublicStats,

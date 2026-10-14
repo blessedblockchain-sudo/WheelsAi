@@ -118,6 +118,22 @@ export interface DeploymentDependents {
     /** That listing, with how many people pay monthly to use the agent; null when the agent is not on sale. */
     listing: { id: string; title: string; pricingModel: string; subscribers: number } | null;
   }>;
+  /**
+   * Workflows of yours on sale that could not run if this deployment were stopped now: a model step runs on
+   * it, or a step agent answers from it. While a workflow cannot run, a plan on it that comes due is not
+   * charged; it is charged if the workflow runs again within `renewalGraceDays` days after the plan's 30 days
+   * ended, and ends uncharged after that. That holds while its listing is published; once it is not (`onSale`
+   * false), every plan on it ends at the end of its 30 days, uncharged, whatever the workflow can do.
+   */
+  workflows: Array<{
+    id: string;
+    /** The workflow's own name. */
+    name: string;
+    /** Its listing is published. False: it was taken off sale and somebody's plan on it still runs. */
+    onSale: boolean;
+    listing: { id: string; title: string; subscribers: number };
+    renewalGraceDays: number;
+  }>;
 }
 
 export function deploymentsResource(client: WheelsAIClient) {

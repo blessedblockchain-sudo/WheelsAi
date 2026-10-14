@@ -37,8 +37,8 @@ export type ChatToolChoice =
 
 export interface ChatCompletionRequest {
   /**
-   * On the unified base (`inference.chat`): `agent/<slug>`, `workflow/<slug>` or a deployment
-   * slug, required. On a path-scoped call (`inference.chatCompletion`, `agents.chatCompletion`,
+   * On the unified base (`inference.chat`): `agent/<slug>`, `workflow/<slug>`, `a/<handle>`,
+   * `w/<slug>` or a deployment slug, required. On a path-scoped call (`inference.chatCompletion`, `agents.chatCompletion`,
    * `workflows.chatCompletion`): optional, the path decides.
    */
   model?: string;
@@ -123,16 +123,30 @@ export interface PaidAgentCompletionExtension {
   billing: UseBilling;
 }
 
-/** One entry of `GET /v1/models`: a running deployment, an agent, an enabled workflow, or an agent you pay for. */
+/**
+ * What `/v1` adds to the completion of a workflow you pay to run (`model: "w/<slug>"`): nothing but this, with
+ * the slug of its listing. The response has no `usage`, and its `model` is `w/<slug>`. A stream opens only once
+ * the answer is whole; its first chunk has `choices: []` and this object.
+ */
+export interface PaidWorkflowCompletionExtension {
+  workflow: { slug: string };
+  /** What the run cost; on a plan it carries `plan`. */
+  billing: UseBilling;
+}
+
+/**
+ * One entry of `GET /v1/models`: a running deployment, an agent, an enabled workflow, an agent you pay for, or a
+ * workflow you pay to run.
+ */
 export interface ModelEntry {
-  /** A deployment slug, `agent/<slug>` or `workflow/<slug>`. Pass it as `model` to `inference.chat`. */
+  /** A deployment slug, `agent/<slug>`, `workflow/<slug>`, `a/<handle>` or `w/<slug>`. Pass it as `model` to `inference.chat`. */
   id: string;
   object: string;
   created: number;
   owned_by: string;
   /** Deployments only: the underlying Hugging Face model id. */
   root?: string;
-  wheelsai?: { kind: "deployment" | "agent" | "workflow" | "paid_agent" };
+  wheelsai?: { kind: "deployment" | "agent" | "workflow" | "paid_agent" | "paid_workflow" };
 }
 
 export function inferenceResource(client: WheelsAIClient) {
@@ -140,11 +154,13 @@ export function inferenceResource(client: WheelsAIClient) {
     /**
      * A chat completion on the unified OpenAI base, `POST /v1/chat/completions`. `model` picks what
      * answers: `agent/<slug>` for an agent, `workflow/<slug>` for a workflow (one call is one
-     * run; see `workflows.chatCompletion`), or the slug of a running model deployment
-     * (`listModels` returns all three). Not streamed: for server-sent events point the OpenAI SDK
-     * at `<api>/v1`. An agent with tools, or a long answer from a model deployment, can outlast
-     * the client's default timeout of 30 seconds (the API gives a model up to two minutes): pass
-     * `{ timeoutMs }`.
+     * run; see `workflows.chatCompletion`), `a/<handle>` for an agent you pay to use (see `use`),
+     * `w/<slug>` for a workflow you pay to run (see `use.workflow`), or the slug of a running model
+     * deployment (`listModels` returns them all). Not streamed: for server-sent events point the
+     * OpenAI SDK at `<api>/v1`. An agent with tools, or a long answer from a model deployment, can
+     * outlast the client's default timeout of 30 seconds (the API gives a model up to two minutes):
+     * pass `{ timeoutMs }`. A `w/<slug>` run can take up to 10 minutes and nothing is sent while it
+     * goes: pass `{ timeoutMs: 11 * 60_000 }`, because a call that gives up sooner cancels the run.
      */
     chat: (request: ChatCompletionRequest & { model: string }, options?: RequestOptions) =>
       client.post<ChatCompletionResponse>("/v1/chat/completions", request, options),
@@ -166,8 +182,10 @@ export function inferenceResource(client: WheelsAIClient) {
 
     /**
      * Everything you can pass as `model`: your running deployments (`id` is the slug), your
-     * agents (`agent/<slug>`) and your enabled workflows (`workflow/<slug>`), in OpenAI's
-     * model-list shape. Free: not a metered call.
+     * agents (`agent/<slug>`) and your enabled workflows (`workflow/<slug>`), and the agents
+     * (`a/<handle>`) and workflows (`w/<slug>`) of others that your organization has started and
+     * pays for, on a plan that is running or at a price it agreed to, in OpenAI's model-list shape.
+     * Free: not a metered call.
      */
     listModels: () => client.get<{ object: "list"; data: ModelEntry[] }>("/v1/models"),
   };

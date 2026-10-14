@@ -115,6 +115,34 @@ export interface Capabilities {
   agentGpu: { available: boolean };
   /** A paid task can be run. */
   paidTasks: { available: boolean };
+  /** The numbers of paid use: the same for everyone, but the last. */
+  paidUse: PaidUseCapabilities;
+}
+
+/** `paidUse` of the capabilities. Cents are whole cents. */
+export interface PaidUseCapabilities {
+  /** Uses one organization may send to one listing in a minute. */
+  perBuyerPerMinute: number;
+  /** Uses a day with no plan, and inside a paid month. On a plan, the plan's count takes its place. */
+  perBuyerPerDay: number;
+  /** The smallest price of one use, or of one run of a workflow. */
+  minPricePerUseCents: number;
+  /** How many paid plans one listing can offer. */
+  maxPlans: number;
+  /** The most uses one plan can include. */
+  maxIncludedUses: number;
+  /** The smallest price of a plan for its 30 days. */
+  minPlanPriceCents: number;
+  /** The smallest price of one use past a plan's included ones. */
+  minExtraUsePriceCents: number;
+  /** The most uses a listing's free trial can include. */
+  maxTrialUses: number;
+  /** How many days a free trial lasts. */
+  trialDays: number;
+  /** The longest a paid run of a workflow on sale may take, in milliseconds: it is stopped after this. */
+  paidWorkflowMaxRunMs: number;
+  /** Answers a day your organization gets on WheelsAI's models; null when it cannot be read. */
+  freeModelDailyAllowance: number | null;
 }
 
 export interface Skill {

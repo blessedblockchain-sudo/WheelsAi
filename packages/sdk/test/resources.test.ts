@@ -14,6 +14,18 @@ import { describe, it } from "node:test";
 import {
   AGENT_KINDS,
   WheelsAI,
+  type AgentInstall,
+  type AgentListing,
+  type Capabilities,
+  type CreateListingInput,
+  type ModelEntry,
+  type PaidWorkflowCompletionExtension,
+  type StartedUsing,
+  type WorkflowAccessState,
+  type WorkflowApiPage,
+  type WorkflowPage,
+  type WorkflowRunRefusal,
+  type WorkflowRunResult,
   WheelsAIError,
   isTopupFinal,
   trialTermsOf,
@@ -188,6 +200,10 @@ const cases: Case[] = [
   { name: "use.run", run: (w) => w.use.run("brief-writer", { input: { topic: "x" } }), method: "POST", path: "/api/a/brief-writer/run", body: { input: { topic: "x" }, stream: false } },
   { name: "use.results", run: (w) => w.use.results("daily-brief"), method: "GET", path: "/api/a/daily-brief/results" },
   { name: "use.usage", run: (w) => w.use.usage(), method: "GET", path: "/api/billing/marketplace-usage" },
+  { name: "use.workflow.page", run: (w) => w.use.workflow.page("weekly-release-notes"), method: "GET", path: "/api/w/weekly-release-notes" },
+  { name: "use.workflow.apiPage", run: (w) => w.use.workflow.apiPage("weekly-release-notes"), method: "GET", path: "/api/w/weekly-release-notes/api" },
+  { name: "use.workflow.access", run: (w) => w.use.workflow.access("weekly-release-notes"), method: "GET", path: "/api/w/weekly-release-notes/access" },
+  { name: "use.workflow.run", run: (w) => w.use.workflow.run("weekly-release-notes", { input: { prompt: "Changes: ..." } }), method: "POST", path: "/api/w/weekly-release-notes/run", body: { input: { prompt: "Changes: ..." } } },
   // ---- marketplace ----
   { name: "marketplace.search", run: (w) => w.marketplace.search({ query: "support", sortBy: "newest", limit: 10 }), method: "GET", path: "/api/marketplace/listings", query: { query: "support", sortBy: "newest", limit: "10" } },
   { name: "marketplace.get", run: (w) => w.marketplace.get("my-bot"), method: "GET", path: "/api/marketplace/listings/my-bot" },
@@ -819,6 +835,7 @@ describe("selling and using an agent", () => {
         { id: "a1", name: "Analyst", onSale: true, listing: { id: "l1", title: "Research Analyst", pricingModel: "monthly", subscribers: 2 } },
         { id: "a2", name: "Helper", onSale: false, listing: null },
       ],
+      workflows: [],
     };
     const { fetch, calls } = recordingFetch(() => jsonResponse(body));
     const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch });
@@ -1020,6 +1037,7 @@ describe("plans on an agent", () => {
           listingId: LISTING,
           title: "Support Bot",
           slug: "support-bot",
+          productKind: "agent",
           handle: "support-bot",
           access: "subscribed",
           trialEnded: false,
@@ -1242,6 +1260,7 @@ describe("the free trial of a listing", () => {
       listingId: LISTING,
       title: "Support Bot",
       slug: "support-bot",
+      productKind: "agent" as const,
       handle: "support-bot",
       renewalPastDue: false,
       perUseThisMonth: { uses: 0, cents: 0 },
@@ -1257,6 +1276,255 @@ describe("the free trial of a listing", () => {
     assert.deepEqual(read, usage);
     assert.deepEqual(read.listings[0]!.perUseAfterTrial, { priceCents: 5, unit: "message" });
     assert.deepEqual(read.listings.map((listing) => listing.trialEnded), [false, true]);
+  });
+});
+
+describe("a workflow on sale", () => {
+  const WORKFLOW = "88888888-8888-4888-8888-888888888881";
+  const json = (body: unknown, status = 200) => {
+    const recorded = recordingFetch(() => jsonResponse(body, status));
+    return { wheels: new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch: recorded.fetch }), calls: recorded.calls };
+  };
+  /** From the compiled test (.test-build/test), four levels up is the repository. */
+  const apiSource = (path: string) => readFileSync(new URL(`../../../../apps/api/src/${path}`, import.meta.url), "utf8");
+  const team: PlanOffer = { id: PLAN, name: "Team", priceCents: 2900, includedUses: 200, extraUsePriceCents: null };
+
+  it("a listing of a workflow is created with orchestrationId and no agentId, and the types allow one of the two", async () => {
+    const input: CreateListingInput = {
+      orchestrationId: WORKFLOW,
+      title: "Weekly Release Notes",
+      shortDescription: "Turns a week of merged changes into release notes.",
+      category: "coding",
+      pricingModel: "per_request",
+      pricePerRequestCents: 25,
+      publish: true,
+    };
+    const { wheels, calls } = json({ listing: {} }, 201);
+    await wheels.marketplace.createListing(input);
+    assert.equal(calls[0]!.rawBody, JSON.stringify(input));
+    assert.equal("agentId" in (calls[0]!.body as object), false);
+    // Checked by the compiler, never run: both ids, a copy, or another price is not a workflow's listing.
+    const notSent = (): CreateListingInput[] => [
+      // @ts-expect-error a listing names an agent or a workflow, not both
+      { agentId: AGENT, orchestrationId: WORKFLOW, title: "x", shortDescription: "y", category: "other", pricingModel: "per_request", pricePerRequestCents: 5 },
+      // @ts-expect-error a workflow is sold per run
+      { orchestrationId: WORKFLOW, title: "x", shortDescription: "y", category: "other", pricingModel: "monthly", monthlyPriceCents: 900 },
+      // @ts-expect-error a workflow is sold by use, never as copies
+      { orchestrationId: WORKFLOW, title: "x", shortDescription: "y", category: "other", pricingModel: "per_request", pricePerRequestCents: 5, sells: "copies" },
+    ];
+    assert.equal(typeof notSent, "function");
+    // The API takes exactly one of the two, and says so in one sentence.
+    const route = apiSource("routes/marketplace.ts");
+    assert.match(route, /agentId: z\.string\(\)\.uuid\(\)\.optional\(\),\s+orchestrationId: z\.string\(\)\.uuid\(\)\.optional\(\),/);
+    assert.match(apiSource("services/marketplace.ts"), /\(params\.agentId !== undefined\) === \(params\.orchestrationId !== undefined\)/);
+    // A change never names what a listing sells.
+    assert.match(route, /createListingSchema\.omit\(\{ agentId: true, orchestrationId: true \}\)\.partial\(\)/);
+  });
+
+  it("the reads say what a listing is for, with no agent for a workflow", async () => {
+    const listed = { id: LISTING, productKind: "workflow", agentId: null, orchestrationId: WORKFLOW, slug: "weekly-release-notes", sells: "use", unit: "run", trial: { enabled: false } };
+    const { listings } = await json({ listings: [listed] }).wheels.marketplace.myListings();
+    const listing: AgentListing = listings[0]!;
+    assert.deepEqual([listing.productKind, listing.agentId, listing.orchestrationId, listing.unit, listing.agent], ["workflow", null, WORKFLOW, "run", undefined]);
+    // The API's own lines: the kind on every read, the workflow's id on the owner's alone.
+    const marketplace = apiSource("services/marketplace.ts");
+    assert.match(marketplace, /productKind,\s+agentId: productKind === "workflow" \? null : listing\.agentId,/);
+    assert.match(marketplace, /orchestrationId: listing\.orchestrationId \?\? null,\s+allowedTools:/);
+
+    // A start, an install and the usage read: the listing's slug, and the agent null.
+    const started: StartedUsing = {
+      access: "listing_pricing",
+      acceptedPricing: { pricingModel: "per_request", pricePerRequestCents: 25, acceptedAt: "2026-10-14T09:30:00.000Z" },
+      subscription: null,
+      productKind: "workflow",
+      slug: "weekly-release-notes",
+      agent: null,
+    };
+    assert.deepEqual(await json(started, 201).wheels.marketplace.startUsing(LISTING, { expected: { pricingModel: "per_request", pricePerRequestCents: 25 } }), started);
+    assert.match(marketplace, /productKind,\s+\/\/[^\n]*\n\s+slug: listing\.slug,\s+agent: productKind === "agent" \? licenceAgentOf\(listing\.agent\) : null,/);
+    const installs = await json({ installs: [{ id: "i1", kind: "use", productKind: "workflow", slug: "weekly-release-notes", agent: null }], canSpend: true }).wheels.marketplace.myInstalls();
+    const install: AgentInstall = installs.installs[0]!;
+    assert.deepEqual([install.productKind, install.slug, install.agent], ["workflow", "weekly-release-notes", null]);
+    const usage = await json({ balanceCents: 450, listings: [{ listingId: LISTING, slug: "weekly-release-notes", productKind: "workflow", handle: null }] }).wheels.use.usage();
+    assert.deepEqual([usage.listings[0]!.productKind, usage.listings[0]!.handle], ["workflow", null]);
+    assert.match(apiSource("services/buyerUsage.ts"), /productKind: listing\.productKind,\s+handle: listing\.productKind === "agent" \? listing\.handle : null,/);
+  });
+
+  it("publish and archive answer the stored row, which says neither what the listing is for nor its unit", async () => {
+    const stored = { id: LISTING, agentId: null, orchestrationId: WORKFLOW, slug: "weekly-release-notes", status: "published" };
+    const published = await json({ listing: stored, message: "Listing published successfully" }).wheels.marketplace.publishListing(LISTING);
+    assert.deepEqual([published.listing.slug, published.listing.productKind, published.listing.unit], ["weekly-release-notes", undefined, undefined]);
+    // Checked by the compiler, never run: the answer may lack both, so a caller must not read them as always there.
+    const readsKind = (): AgentListing["productKind"] =>
+      // @ts-expect-error the stored row carries no productKind
+      published.listing.productKind;
+    assert.equal(typeof readsKind, "function");
+    // The API's own lines: the row as the database holds it, not a formatted listing.
+    const marketplace = apiSource("services/marketplace.ts");
+    assert.match(marketplace, /export async function publishListing\(listingId: string, orgId: string\) \{[\s\S]{0,200}?return prisma\.agentListing\.findUnique\(\{ where: \{ id: listingId \} \}\);/);
+    assert.match(apiSource("routes/marketplace.ts"), /const listing = await publishListing\(id, orgId\);\s+return \{ listing, message: "Listing published successfully" \};/);
+    assert.match(apiSource("routes/marketplace.ts"), /const listing = await archiveListing\(id, orgId\);\s+return \{ listing, message: "Listing archived successfully" \};/);
+  });
+
+  it("its page, its API page and where you stand are read by the listing's slug, under the names the API sends", async () => {
+    const page: WorkflowPage = {
+      kind: "workflow",
+      listingId: LISTING,
+      slug: "weekly-release-notes",
+      title: "Weekly Release Notes",
+      description: "Turns a week of merged changes into release notes.",
+      pricingModel: "per_request",
+      unit: "run",
+      priceCents: 25,
+      plans: [team],
+      trial: null,
+      keepsCopy: true,
+      maxRunMinutes: 10,
+      input: { schema: { type: "object", properties: { prompt: { type: "string" } }, required: ["prompt"] }, maxInputBytes: 65536, maxPromptChars: 20000 },
+    };
+    assert.deepEqual(await json(page).wheels.use.workflow.page("weekly-release-notes"), page);
+    // Every field the API builds, and no other.
+    const built = apiSource("services/workflowPublicPage.ts");
+    const read = built.slice(built.indexOf("export function workflowPublicReadOf"), built.indexOf("// GET /api/w/:slug/api"));
+    const sent = new Set([...read.matchAll(/\n\s+(\w+):/g)].map((match) => match[1]!));
+    for (const field of [...Object.keys(page), ...Object.keys(page.input)]) assert.ok(sent.has(field), `the API does not send ${field}`);
+    for (const field of sent) assert.ok(field in page || field in page.input, `the SDK does not type ${field}`);
+
+    const apiPage = await json({ kind: "workflow", model: "w/weekly-release-notes", limits: { perMinute: 10, perDayWithoutPlan: 200, maxActiveRuns: 3 }, refusals: [{ code: "run_failed", status: 502, message: "...", openai: { code: "workflow_failed", status: 502 } }] }).wheels.use.workflow.apiPage("weekly-release-notes");
+    const typed: Pick<WorkflowApiPage, "model" | "limits"> = apiPage;
+    assert.deepEqual([typed.model, typed.limits.maxActiveRuns, apiPage.refusals[0]!.openai.code], ["w/weekly-release-notes", 3, "workflow_failed"]);
+    assert.match(built, /limits: \{\s+perMinute: PAID_USE_LIMITS\.perBuyerPerMinute,\s+perDayWithoutPlan: PAID_USE_LIMITS\.perBuyerPerDay,\s+maxActiveRuns: PAID_WORKFLOW_MAX_ACTIVE_RUNS,\s+\},/);
+
+    const access: WorkflowAccessState = {
+      access: "own_workflow",
+      listingId: LISTING,
+      terms: { pricingModel: "per_request", pricePerRequestCents: 25, monthlyPriceCents: null, unit: "run", keepsCopy: true },
+      plans: [team],
+      plan: null,
+      trial: null,
+      trialAvailable: false,
+      trialNeedsCredits: false,
+      trialEnded: false,
+      accepted: null,
+      subscription: null,
+      balanceCents: 475,
+      canAccept: true,
+      startBlocked: null,
+      paused: false,
+    };
+    assert.deepEqual(await json(access).wheels.use.workflow.access("weekly-release-notes"), access);
+    const core = apiSource("services/paidWorkflow.ts");
+    assert.match(core, /trial: null,\s+trialAvailable: false,\s+trialNeedsCredits: false,\s+trialEnded: false,/);
+    assert.match(core, /\? "own_workflow"/);
+    // A slug is one path segment.
+    assert.throws(() => json({}).wheels.use.workflow.access(".."), WheelsAIError);
+  });
+
+  it("a run sends the input and nothing else, and gives back the text and the billing", async () => {
+    const answer: WorkflowRunResult = {
+      output: { format: "text", text: "Release notes: ..." },
+      billing: { chargedCents: 25, balanceCents: 450, access: "listing_pricing" },
+    };
+    const { wheels, calls } = json(answer);
+    // Whatever else the caller's object carries stays home: the route refuses any other field.
+    const body = { input: { prompt: "Changes: ..." }, stream: false } as unknown as { input: Record<string, unknown> };
+    assert.deepEqual(await wheels.use.workflow.run("weekly-release-notes", body), answer);
+    assert.equal(calls[0]!.rawBody, JSON.stringify({ input: { prompt: "Changes: ..." } }));
+    const core = apiSource("services/paidWorkflow.ts");
+    assert.match(core, /const runBodySchema = z\.object\(\{ input: z\.record\(z\.unknown\(\)\) \}\)\.strict\(\);/);
+    assert.match(apiSource("routes/paidWorkflow.ts"), /return reply\.status\(200\)\.send\(\{ output, billing: result\.billing \}\);/);
+    assert.match(apiSource("routes/paidWorkflow.ts"), /"\/w\/:slug\/run",\s+\{\s+preHandler: \[auth, use\],/);
+  });
+
+  it("a run waits longer than the longest run, and options.timeoutMs replaces it", async () => {
+    const seen: Array<AbortSignal | null | undefined> = [];
+    const wheels = new WheelsAI({
+      baseUrl: BASE_URL,
+      apiKey: API_KEY,
+      timeoutMs: 30_000,
+      fetch: async (_input, init) => {
+        seen.push(init?.signal);
+        return jsonResponse({ output: { format: "text", text: "ok" }, billing: { chargedCents: 0, balanceCents: 0, access: "subscribed" } });
+      },
+    });
+    // The time each call is given, read where the client asks for its signal.
+    const asked: number[] = [];
+    const timeout = AbortSignal.timeout;
+    AbortSignal.timeout = (ms: number) => {
+      asked.push(ms);
+      return timeout.call(AbortSignal, ms);
+    };
+    try {
+      await wheels.use.workflow.run("weekly-release-notes", { input: {} });
+      await wheels.use.workflow.run("weekly-release-notes", { input: {} }, { timeoutMs: 0 });
+      // Options that carry no time, or carry it as undefined, keep the run's wait, not the client's 30 seconds.
+      await wheels.use.workflow.run("weekly-release-notes", { input: {} }, { timeoutMs: undefined });
+      await wheels.use.workflow.run("weekly-release-notes", { input: {} }, { headers: { "x-trace": "1" } });
+      await wheels.use.workflow.run("weekly-release-notes", { input: {} }, { timeoutMs: 5_000 });
+    } finally {
+      AbortSignal.timeout = timeout;
+    }
+    assert.ok(seen[0], "the default run call has a timeout");
+    assert.equal(seen[1], undefined, "timeoutMs 0 disables it");
+    assert.deepEqual(asked, [11 * 60_000, 11 * 60_000, 11 * 60_000, 5_000]);
+    // The wait is longer than the API lets a paid run go on.
+    const own = readFileSync(new URL("../../src/resources/useWorkflow.ts", import.meta.url), "utf8");
+    const waits = Number(/const PAID_RUN_TIMEOUT_MS = (\d+) \* 60_000;/.exec(own)![1]) * 60_000;
+    const longest = Number(/PAID_WORKFLOW_MAX_RUN_MS = ([\d_]+);/.exec(apiSource("services/workflowListing.ts"))![1]!.replace(/_/g, ""));
+    assert.ok(waits > longest, `${waits} is not longer than ${longest}`);
+  });
+
+  it("a refused run keeps its code, its sentence and what was given back", async () => {
+    const refusals: Array<[number, WorkflowRunRefusal]> = [
+      [502, { error: "run_failed", message: "The workflow could not finish this run. Your $0.25 was refunded.", refundedCents: 25 }],
+      [504, { error: "run_timed_out", message: "The workflow took too long and was stopped. Your $0.25 was refunded.", refundedCents: 25 }],
+      [429, { error: "workflow_busy", message: "This workflow is running as many times as it can right now. Nothing was charged. Try again in a minute.", retryAfterSeconds: 60 }],
+      [409, { error: "own_workflow", message: "This is your workflow. This is the page people who pay see." }],
+      [400, { error: "input_invalid", message: "Some answers need another look.", details: [{ path: "", field: null, label: null, message: "prompt is required" }] }],
+    ];
+    for (const [status, body] of refusals) {
+      await assert.rejects(json(body, status).wheels.use.workflow.run("weekly-release-notes", { input: {} }), (err: unknown) => {
+        assert.ok(err instanceof WheelsAIError);
+        assert.deepEqual([err.status, err.code, err.message], [status, body.error, body.message]);
+        assert.deepEqual(err.data, body);
+        return true;
+      });
+    }
+    // The codes and their statuses are the run's own.
+    const core = apiSource("services/paidWorkflow.ts");
+    assert.match(core, /status: 429,\s+code: "workflow_busy"/);
+    assert.match(core, /status: 504, code: "run_timed_out"/);
+    assert.match(core, /status: 409, code: "own_workflow"/);
+    assert.match(apiSource("services/paidUse.ts"), /if \(workflow\) return \{ status: 502, code: "run_failed"/);
+  });
+
+  it("/v1 names it w/<slug>, the capabilities say the longest run, and a stop names the workflows that need a deployment", async () => {
+    const models = await json({ object: "list", data: [{ id: "w/weekly-release-notes", object: "model", created: 1, owned_by: "wheelsai", wheelsai: { kind: "paid_workflow" } }] }).wheels.inference.listModels();
+    const entry: ModelEntry = models.data[0]!;
+    assert.deepEqual([entry.id, entry.wheelsai?.kind], ["w/weekly-release-notes", "paid_workflow"]);
+    const completions = apiSource("routes/paidWorkflowCompletions.ts");
+    assert.match(completions, /PAID_WORKFLOW_MODEL_PREFIX = "w\/";/);
+    assert.match(completions, /wheelsai: \{ kind: "paid_workflow" \},/);
+    assert.match(completions, /return \{\s+workflow: \{ slug \},\s+billing: \{/);
+    const extension: PaidWorkflowCompletionExtension = { workflow: { slug: "weekly-release-notes" }, billing: { chargedCents: 25, balanceCents: 450, access: "listing_pricing" } };
+    assert.equal(extension.workflow.slug, "weekly-release-notes");
+
+    const capabilities = await json({ paidUse: { paidWorkflowMaxRunMs: 600_000 } }).wheels.platform.capabilities();
+    const said: Pick<Capabilities, "paidUse"> = capabilities;
+    assert.equal(said.paidUse.paidWorkflowMaxRunMs, 600_000);
+    const route = apiSource("routes/capabilities.ts");
+    assert.match(route, /paidWorkflowMaxRunMs: PAID_WORKFLOW_MAX_RUN_MS,/);
+    // Every number of paidUse the API sends is typed, under its name.
+    const shape = route.slice(route.indexOf("export interface PaidUseCapability {"), route.indexOf("/** The whole answer. */"));
+    const fields = [...shape.matchAll(/\n\s+(\w+): /g)].map((match) => match[1]!);
+    const own = readFileSync(new URL("../../src/resources/platform.ts", import.meta.url), "utf8");
+    const typedShape = own.slice(own.indexOf("export interface PaidUseCapabilities {"));
+    assert.ok(fields.length >= 11);
+    for (const field of fields) assert.ok(typedShape.includes(`\n  ${field}: `), `the SDK does not type paidUse.${field}`);
+
+    const dependents = { agents: [], workflows: [{ id: WORKFLOW, name: "Release notes", onSale: true, listing: { id: LISTING, title: "Weekly Release Notes", subscribers: 2 }, renewalGraceDays: 3 }] };
+    assert.deepEqual(await json(dependents).wheels.deployments.dependents(DEP), dependents);
+    assert.match(apiSource("services/deploymentDependents.ts"), /listing: \{ id: string; title: string; subscribers: number \};[\s\S]{0,200}?renewalGraceDays: number;/);
   });
 });
 

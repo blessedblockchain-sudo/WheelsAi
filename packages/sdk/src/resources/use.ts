@@ -1,6 +1,7 @@
 import { seg, type RequestOptions, type WheelsAIClient } from "../client.js";
 import type { TaskInputIssue } from "./agents.js";
-import type { PlanOffer, PricingModel, SubscriptionPlan, TrialOffer } from "./marketplace.js";
+import type { ListingProductKind, PlanOffer, PricingModel, SubscriptionPlan, TrialOffer } from "./marketplace.js";
+import { useWorkflowMethods } from "./useWorkflow.js";
 
 /**
  * Use of an agent you pay for: `/api/a/{handle}/...`. You use a creator's own agent, per use, on a plan
@@ -19,11 +20,14 @@ import type { PlanOffer, PricingModel, SubscriptionPlan, TrialOffer } from "./ma
  *
  * Every paid answer also says what it cost in its headers (`USAGE_HEADERS`). `chat` and `run` give you the
  * same numbers as `billing`, so nothing has to be read from a header here.
+ *
+ * A workflow someone sells is run the same way, by the slug of its listing: `use.workflow`.
  */
 
 /**
- * The usage headers of a paid answer of `/api/a/{handle}/chat`, `/api/a/{handle}/run` and
- * `/v1/chat/completions` with `model: "a/<handle>"`, for a caller that reads the raw response. The first
+ * The usage headers of a paid answer of `/api/a/{handle}/chat`, `/api/a/{handle}/run`, `/api/w/{slug}/run`
+ * and `/v1/chat/completions` with `model: "a/<handle>"` or `"w/<slug>"`, for a caller that reads the raw
+ * response. The first
  * two are on every paid answer (the balance is left out when it could not be read); the rest only on a
  * plan. The refusal `plan_used_up` carries the plan's headers too, with 0 remaining. A free trial is a plan
  * here: its answers carry the plan's headers, without `planReset`.
@@ -155,8 +159,11 @@ export interface UsesAndCents {
 export interface UseUsageRow {
   listingId: string;
   title: string;
+  /** The listing's slug. A workflow is used at `/w/<slug>`. */
   slug: string;
-  /** The agent's address, `/a/<handle>`; null when it has no page. */
+  /** What the listing is for: an agent, or a workflow, whose uses are runs. */
+  productKind: ListingProductKind;
+  /** The agent's address, `/a/<handle>`; null when it has no page, and for a workflow. */
   handle: string | null;
   /** Where you stand with it, as `access` answers it. */
   access: Exclude<UseAccessKind, "own_agent">;
@@ -299,5 +306,8 @@ export function useResource(client: WheelsAIClient) {
      * that were delivered are counted. It is a read: it costs nothing and is not counted as an API call.
      */
     usage: () => client.get<UseUsage>("/api/billing/marketplace-usage"),
+
+    /** A workflow you pay for, by the slug of its listing: its page, its API page, where you stand, and a run. */
+    workflow: useWorkflowMethods(client),
   };
 }

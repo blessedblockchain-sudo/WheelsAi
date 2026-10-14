@@ -19,6 +19,13 @@ export type ListingStatus = "draft" | "published" | "archived" | (string & {});
  */
 export type ListingSells = "use" | "copies";
 
+/**
+ * What a listing is for: an agent, or a workflow. A workflow's listing sells use only, per run, with
+ * plans on top: no free trial, no copies, no token. Buyers run it at `/w/<slug>` (the listing's slug) and
+ * as model `w/<slug>`; see `use.workflow`.
+ */
+export type ListingProductKind = "agent" | "workflow";
+
 /** What one payment buys: a message, a run or a month. null for a free listing, a copy or a token listing. */
 export type ListingUnit = "message" | "run" | "month";
 
@@ -151,9 +158,20 @@ export interface SubscriptionPlan {
 
 export interface AgentListing {
   id: string;
-  agentId: string;
+  /** An agent, or a workflow. */
+  productKind: ListingProductKind;
+  /** The listed agent. null on a workflow's listing. */
+  agentId: string | null;
+  /**
+   * Your own listings only (create, update, `myListings`): the listed workflow, and null on an agent's
+   * listing. A read anyone can make does not carry it.
+   */
+  orchestrationId?: string | null;
   title: string;
-  /** The URL segment: the listing lives at `<web>/marketplace/<slug>`. Derived from the title by the API. */
+  /**
+   * The URL segment: the listing lives at `<web>/marketplace/<slug>`. Derived from the title by the API. A
+   * workflow's listing is also used by it: its page is `/w/<slug>` and its model `w/<slug>`.
+   */
   slug: string;
   shortDescription: string;
   longDescription: string | null;
@@ -164,8 +182,9 @@ export interface AgentListing {
   pricingModel: PricingModel;
   pricePerRequestCents: number | null;
   monthlyPriceCents: number | null;
-  /** What the listing sells. */
+  /** What the listing sells. A workflow's listing sells `use`. */
   sells: ListingSells;
+  /** `run` on a workflow's listing. */
   unit: ListingUnit | null;
   /** Whether the listing has a token. Present on a search, the featured row and a listing read by slug. */
   hasToken?: boolean;
@@ -208,7 +227,7 @@ export interface AgentListing {
   publishedAt: string | null;
   createdAt: string;
   updatedAt: string;
-  /** `agentKind` says how people use the listed agent. */
+  /** `agentKind` says how people use the listed agent. Left out on a workflow's listing. */
   agent?: {
     id: string;
     framework: string;
@@ -220,6 +239,13 @@ export interface AgentListing {
     handle?: string | null;
   };
 }
+
+/**
+ * A listing as `publishListing` and `archiveListing` answer it: the row as it is stored, which carries no
+ * `productKind` and no `unit`. Read them with `myListings`, or keep the ones of the listing you had.
+ */
+export type StoredListing = Omit<AgentListing, "productKind" | "unit"> &
+  Partial<Pick<AgentListing, "productKind" | "unit">>;
 
 /** One of your own listings, as `myListings` answers it: its plans carry their status and their subscribers. */
 export interface OwnedListing extends AgentListing {
@@ -274,15 +300,20 @@ export interface ListingSubscription {
   plan?: SubscriptionPlan | null;
 }
 
-/** One licence in `myInstalls`: a copy the buyer owns, or the right to use the creator's agent. */
+/** One licence in `myInstalls`: a copy the buyer owns, or the right to use the creator's agent or workflow. */
 export interface AgentInstall {
   id: string;
   listingId: string;
-  /** `use`: the buyer uses the creator's agent and has no copy. `copy`: their own copy. */
+  /** `use`: the buyer uses the creator's agent or workflow and has no copy. `copy`: their own copy. */
   kind: "copy" | "use";
   /** null when `kind` is `use`. */
   clonedAgentId: string | null;
-  agent: LicenceAgent;
+  /** What the listing is for. */
+  productKind: ListingProductKind;
+  /** The listing's slug: a workflow is used at `/w/<slug>`. */
+  slug: string;
+  /** The agent, as its buyer may know it. null for a workflow, which has no agent. */
+  agent: LicenceAgent | null;
   status: string;
   totalRequests: number;
   totalSpentCents: number;
@@ -311,7 +342,12 @@ export interface StartedUsing {
   /** What the buyer agreed to; null for a free listing. */
   acceptedPricing: { pricingModel: PricingModel | null; pricePerRequestCents: number | null; acceptedAt: string | null } | null;
   subscription: ListingSubscription | null;
-  agent: LicenceAgent;
+  /** What the listing is for. */
+  productKind: ListingProductKind;
+  /** The listing's slug: a workflow is used at `/w/<slug>`. */
+  slug: string;
+  /** null for a workflow, which has no agent. */
+  agent: LicenceAgent | null;
 }
 
 export interface Pagination {
@@ -342,9 +378,8 @@ export interface SearchListingsParams {
   limit?: number;
 }
 
-export interface CreateListingInput {
-  /** The agent to list. Must belong to the caller's organization and have no listing yet. */
-  agentId: string;
+/** The fields of a listing that do not say what it sells. */
+interface ListingFields {
   /** 3 to 100 characters. */
   title: string;
   /** 10 to 280 characters. */
@@ -373,7 +408,41 @@ export interface CreateListingInput {
   publish?: boolean;
 }
 
-export type UpdateListingInput = Partial<Omit<CreateListingInput, "agentId">>;
+/** A listing of an agent. */
+export interface CreateAgentListingInput extends ListingFields {
+  /** The agent to list. Must belong to the caller's organization and have no listing yet. */
+  agentId: string;
+  orchestrationId?: never;
+}
+
+/**
+ * A listing of a workflow, sold per run: `pricingModel` is `per_request` and `pricePerRequestCents` at least
+ * 5. Plans are set afterwards with `setPlans`; a workflow has no free trial. The workflow must be enabled,
+ * have a step, use only agents its organization built, and have a time limit of 10 minutes or less (the
+ * capabilities' `paidUse.paidWorkflowMaxRunMs`), or the create answers 409 `workflow_not_sellable` with the
+ * reason. Refused on their field (400 `validation_failed`): `sells: "copies"`, any other pricing model, a
+ * price under 5, any `allowedTools`, and a title with no letter or digit. 409 `listing_exists` when the
+ * workflow already has a listing; 404 `workflow_not_found` when it is not one of the caller's.
+ */
+export interface CreateWorkflowListingInput extends Omit<ListingFields, "pricingModel" | "pricePerRequestCents" | "monthlyPriceCents" | "sells" | "allowedTools"> {
+  /** The workflow to list. Must belong to the caller's organization and have no listing yet. */
+  orchestrationId: string;
+  agentId?: never;
+  pricingModel: "per_request";
+  /** The price of one run, in cents: 5 to 100000. */
+  pricePerRequestCents: number;
+  /** A workflow is sold by use only. */
+  sells?: "use";
+}
+
+/** What `createListing` sends: an agent or a workflow, exactly one of the two. */
+export type CreateListingInput = CreateAgentListingInput | CreateWorkflowListingInput;
+
+/**
+ * A change never names what a listing sells. On a workflow's listing the price per run, the words and the
+ * category change; the same refusals as at a create apply.
+ */
+export type UpdateListingInput = Partial<ListingFields>;
 
 export type PayoutStatus = "pending" | "processing" | "completed" | "failed" | "cancelled";
 
@@ -483,7 +552,10 @@ export function marketplaceResource(client: WheelsAIClient) {
     search: (params?: SearchListingsParams) =>
       client.get<{ listings: AgentListing[]; pagination: Pagination }>("/api/marketplace/listings", { ...params }),
 
-    /** One listing by slug (or id). Published listings only. Only a read by slug carries `plans` and `freeTrial`. */
+    /**
+     * One listing by slug (or id). Published listings only. Only a read by slug carries `plans` and `freeTrial`.
+     * `productKind` says whether it is an agent's or a workflow's.
+     */
     get: (slugOrId: string) =>
       client.get<{ listing: AgentListing }>(`/api/marketplace/listings/${seg(slugOrId)}`),
 
@@ -509,25 +581,36 @@ export function marketplaceResource(client: WheelsAIClient) {
 
     // ---- publishing ----
 
-    /** The caller organization's listings in every status, each with the plans it has on offer. */
+    /**
+     * The caller organization's listings in every status, each with the plans it has on offer, what it is for
+     * (`productKind`) and, for a workflow's listing, the workflow (`orchestrationId`).
+     */
     myListings: () =>
       client.get<{ listings: OwnedListing[] }>("/api/marketplace/my-listings"),
 
-    /** Creates a draft. Follow with `publishListing`. */
+    /**
+     * Creates a draft of an agent's listing (`agentId`) or a workflow's (`orchestrationId`), exactly one of
+     * the two: both or neither answers 400 `validation_failed`. Follow with `publishListing`, or send
+     * `publish: true`.
+     */
     createListing: (input: CreateListingInput) =>
       client.post<{ listing: AgentListing }>("/api/marketplace/listings", input),
 
     updateListing: (listingId: string, updates: UpdateListingInput) =>
       client.patch<{ listing: AgentListing }>(`/api/marketplace/listings/${seg(listingId)}`, updates),
 
-    /** Makes a draft or archived listing public. The response carries the `slug`. */
+    /**
+     * Makes a draft or archived listing public. The response carries the `slug`. Its listing is the stored
+     * row (`StoredListing`): it has no `productKind` and no `unit`; read them with `myListings`.
+     */
     publishListing: (listingId: string) =>
-      client.post<{ listing: AgentListing; message: string }>(
+      client.post<{ listing: StoredListing; message: string }>(
         `/api/marketplace/listings/${seg(listingId)}/publish`,
       ),
 
+    /** Stops selling a listing. Its listing is the stored row, as `publishListing` answers it. */
     archiveListing: (listingId: string) =>
-      client.post<{ listing: AgentListing; message: string }>(
+      client.post<{ listing: StoredListing; message: string }>(
         `/api/marketplace/listings/${seg(listingId)}/archive`,
       ),
 
@@ -541,7 +624,8 @@ export function marketplaceResource(client: WheelsAIClient) {
      * The listing's one free trial is one more entry of `plans` (`TrialPlanInput`), beside the four: changed
      * in place by its `id`, and named in `ended` to stop offering it. A free trial with a price, with a price
      * for an extra use, with more than 50 uses, or a second one in the set, is refused with 400
-     * `validation_failed`.
+     * `validation_failed`. A workflow's listing takes plans, where one run is one use, and no free trial: an
+     * entry of kind `trial` is refused on its `kind`.
      *
      * Answers the plans as they are now. Refusals: 400 `validation_failed` (`message` is the first problem,
      * `fields` in `error.data` has a sentence for each, keyed as `plans[0].priceCents`); 404
@@ -565,8 +649,9 @@ export function marketplaceResource(client: WheelsAIClient) {
      * the install pauses at the end of the paid period and this call answers 409
      * `pricing_changed`; pass `acceptNewPricing: true` to continue on the new terms.
      * 409 `subscription_claim_lost` means another request for the same install won; retry.
-     * A listing that sells use is not installed: it answers 409 `sells_use` (with `handle`), and
-     * `startUsing` is the call. 409 `already_using` (with `handle`) means you already use that agent.
+     * A listing that sells use is not installed: it answers 409 `sells_use` (with `handle`, null for a
+     * workflow), and `startUsing` is the call. 409 `already_using` (with `handle`) means you already use that
+     * agent.
      */
     install: (listingId: string, options: { acceptNewPricing?: boolean } = {}) =>
       client.post<{ message: string; install: unknown; clonedAgent: unknown; subscription: unknown }>(
@@ -576,7 +661,9 @@ export function marketplaceResource(client: WheelsAIClient) {
 
     /**
      * Start using the creator's agent (a listing that sells `use`), or accept its new pricing. No copy is made:
-     * you use the agent with `use.chat` and `use.run`, or on its page.
+     * you use the agent with `use.chat` and `use.run`, or on its page. A workflow's listing is started the same
+     * way and run with `use.workflow.run`; one that cannot run right now is refused with 409 `not_offered` and
+     * nothing is charged, and the answer's `agent` is null.
      *
      * `expected` is the pricing you were shown, and it is required: it is your consent. A per-use price charges
      * nothing now (each use is charged when it is sent); a monthly price charges the first 30 days from your
@@ -646,8 +733,8 @@ export function marketplaceResource(client: WheelsAIClient) {
       }),
 
     /**
-     * Stop using an agent. This is the uninstall route: a subscription ends now, and the month you paid for
-     * is not refunded (cancel the subscription instead to keep access until it ends).
+     * Stop using an agent or a workflow. This is the uninstall route: a subscription ends now, and the month
+     * you paid for is not refunded (cancel the subscription instead to keep access until it ends).
      */
     stopUsing: (listingId: string) =>
       client.post<{ message: string }>(`/api/marketplace/listings/${seg(listingId)}/uninstall`),
@@ -664,7 +751,10 @@ export function marketplaceResource(client: WheelsAIClient) {
           status: string;
           kind: "copy" | "use";
           clonedAgentId: string | null;
-          agent: LicenceAgent;
+          productKind: ListingProductKind;
+          slug: string;
+          /** null for a workflow. */
+          agent: LicenceAgent | null;
           access: InstallAccess;
           installedAt: string;
         } | null;

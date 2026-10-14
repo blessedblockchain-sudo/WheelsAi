@@ -20,6 +20,7 @@ import {
   type PlanOffer,
   type PublicAgentDetail,
   type PublicAgentPaidTerms,
+  type TrialOffer,
 } from "@/lib/api";
 import { AGENT_PAUSED_MESSAGE, PAUSED_RECHECK_MS, PUBLIC_PAUSED_NOTICE, accessIsPaused } from "@/lib/listing-pause";
 import {
@@ -29,7 +30,6 @@ import {
   lastResultLine,
   noticeOfView,
   paidRefusalNotice,
-  paidView,
   priceLine,
   priceOfPage,
   privacyLine,
@@ -46,6 +46,7 @@ import {
 } from "@/lib/paid-use";
 import {
   MOVE_UP_WORDS,
+  TRIAL_WORDS,
   USE_PLAN_WORDS,
   accessAfterRefusal,
   accessAfterUse,
@@ -56,6 +57,8 @@ import {
   planStartDialog,
   planStartNotice,
   planTermsOf,
+  trialStartDialog,
+  trialTermsOf,
 } from "@/lib/use-plans";
 import { cn } from "@/lib/utils";
 import { useHydrated } from "./local-time";
@@ -97,6 +100,17 @@ interface ShownPlan {
   dialog: PaidDialog;
 }
 
+/**
+ * The free trial a person is looking at when they agree to start it. `trial`
+ * is the object the dialog's sentence was made from, held from the moment the
+ * dialog opened: its terms are what is sent, whatever the page has read since.
+ */
+interface ShownTrial {
+  listingId: string;
+  trial: TrialOffer;
+  dialog: PaidDialog;
+}
+
 /** The task form stays on screen in these states, so answers typed early are never lost. */
 const TASK_FORM_STATES: ReadonlyArray<PaidView["kind"]> = [
   "signed_out",
@@ -131,6 +145,8 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
   const [shown, setShown] = useState<Shown | null>(null);
   // The plan whose start dialog is open.
   const [shownPlan, setShownPlan] = useState<ShownPlan | null>(null);
+  // The free trial whose start dialog is open.
+  const [shownTrial, setShownTrial] = useState<ShownTrial | null>(null);
   // Whether someone who already pays per use has opened the plans.
   const [plansOpen, setPlansOpen] = useState(false);
   // The bigger plan whose dialog is open, for someone on a plan.
@@ -140,6 +156,8 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
   const [busy, setBusy] = useState(false);
   // True from the press that starts a plan until its answer: a second press starts nothing.
   const startingPlan = useRef(false);
+  // The same for the free trial: a second press starts nothing.
+  const startingTrial = useRef(false);
   // The same for a move to a bigger plan: a second press charges nothing.
   const movingPlan = useRef(false);
   // True from the press on a bigger plan's card until its dialog is ready: the access is read first.
@@ -212,8 +230,9 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
   // `view` is paidView with, for someone on a plan, the count of what is left as its sentence. `plans` is what
   // the page draws of plans: the cards and where they go, whether they can be started, the count beside
   // the sentence. `moveUp` is the bigger plans someone on a plan can move to, null for everyone else.
-  // A listing with no plans gives paidView and nothing else.
-  const { view, plans, moveUp } = useMemo(
+  // `trial` is the listing's free trial: its offer above the cards for someone who could take it, and what
+  // is said under the count while on it. A listing with no plans and no trial gives paidView and nothing else.
+  const { view, plans, moveUp, trial } = useMemo(
     () => planPageView({ authed: signedIn, access: signedIn ? access : null, page: terms, kind }),
     [signedIn, access, terms, kind],
   );
@@ -305,6 +324,41 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
     [access, plans.canStart],
   );
 
+  /**
+   * Starts the free trial that was shown, with that trial's own terms (no price, no price for an extra
+   * use), then reads where the person stands. Never throws. Nothing is charged, started or refused. A
+   * refusal ends in the API's sentence: a trial that was used before, one that waits for credits to be
+   * added once (with the way to add them), or a trial that changed, which is drawn again from the refusal.
+   */
+  const agreeToTrial = useCallback(
+    async (agreed: ShownTrial) => {
+      if (startingTrial.current) return;
+      startingTrial.current = true;
+      setBusy(true);
+      setNotice(null);
+      try {
+        await marketplaceApi.startPlan(agreed.listingId, trialTermsOf(agreed.trial));
+      } catch (error) {
+        const refusal = paidUseRefusalOf(error);
+        setNotice(planStartNotice({ status: error instanceof ApiError ? error.status : 0, refusal, unit }));
+        setAccess((held) => accessAfterRefusal(held, refusal));
+      } finally {
+        await readAccess();
+        startingTrial.current = false;
+        setBusy(false);
+        setResultsRead((n) => n + 1);
+      }
+    },
+    [readAccess, unit],
+  );
+
+  /** "Start the free trial", pressed: its dialog opens, made from the trial on the page. Nothing is sent yet. */
+  const pressTrial = useCallback(() => {
+    const offer = trial.offer;
+    if (!access || offer?.kind !== "start") return;
+    setShownTrial({ listingId: access.listingId, trial: offer.trial, dialog: trialStartDialog(offer.trial, offer.after) });
+  }, [access, trial.offer]);
+
   // Only the people who may start a plan may move up.
   const canMoveUp = moveUp?.canMove === true;
 
@@ -372,7 +426,8 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
     async (refused: PaidNotice) => {
       const state = await readAccess();
       if (!state) return;
-      const current = paidView({ authed: true, access: state, page: terms, kind });
+      // The view that knows plans and the free trial: on a trial, accepting a price that went up is its action.
+      const current = planPageView({ authed: true, access: state, page: terms, kind }).view;
       if (current.action.kind === "accept") {
         const named = refused.action.kind === "accept" ? refused.price : null;
         if (named && current.price && named.model === current.price.model && named.cents === current.price.cents) {
@@ -507,6 +562,8 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
               <p className="break-words text-foreground">{view.sentence}</p>
               {/* On a plan whose renewal is being retried: what is left, beside the sentence that asks for credits. */}
               {plans.countLine && <p className="break-words text-foreground">{plans.countLine}</p>}
+              {/* On the free trial, for someone who agreed to a price per use: what a use costs after the free ones. */}
+              {trial.afterLine && <p className="break-words text-muted-foreground">{trial.afterLine}</p>}
               {view.lowCredits && <p className="text-muted-foreground">{view.lowCredits}</p>}
 
               {/* On a plan, with a bigger one on offer: the bigger plans are one press away, and a move is still asked first. */}
@@ -537,7 +594,33 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
                 </div>
               )}
 
-              {/* Nothing agreed to yet: the plans first, then the price per use with the action below. */}
+              {/* The listing's free trial, above the plans. Drawn only for someone whose organization could still
+                  take it: the button for those who may start it, the way to add credits when that is the one
+                  thing missing, the page's own sign-in below for someone signed out, and who to ask otherwise. */}
+              {trial.offer && (
+                <div className="space-y-2 rounded-lg border bg-background p-4">
+                  <p className="break-words font-medium text-foreground">{trial.offer.line}</p>
+                  {trial.offer.note && <p className="break-words text-muted-foreground">{trial.offer.note}</p>}
+                  {trial.offer.kind === "start" && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-auto min-h-10 w-full whitespace-normal sm:w-auto"
+                      disabled={busy}
+                      onClick={pressTrial}
+                    >
+                      {TRIAL_WORDS.startButton}
+                    </Button>
+                  )}
+                  {trial.offer.kind === "needs_credits" && (
+                    <p>
+                      <PanelActionLink action={{ label: PAID_USE_MESSAGES.addCredits, href: ADD_CREDITS_HREF }} />
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* Nothing agreed to yet, or on the free trial: the plans first, then the price per use with the action below. */}
               {plans.place === "first" && (
                 <>
                   {planCards}
@@ -668,6 +751,19 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
           description={shownPlan.dialog.body}
           confirmLabel={shownPlan.dialog.confirmLabel}
           onConfirm={() => agreeToPlan(shownPlan)}
+        />
+      )}
+
+      {shownTrial && (
+        <ConfirmDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setShownTrial(null);
+          }}
+          title={shownTrial.dialog.title}
+          description={shownTrial.dialog.body}
+          confirmLabel={shownTrial.dialog.confirmLabel}
+          onConfirm={() => agreeToTrial(shownTrial)}
         />
       )}
 

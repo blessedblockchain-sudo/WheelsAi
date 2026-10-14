@@ -71,6 +71,7 @@ test("the view draws the pure file's model and writes no sentence of its own", (
     "{plan.uses}",
     "{plan.after}",
     "{view.payAsYouGo}",
+    "{view.trialLine}",
     "{view.priceLine}",
     "{view.priceNote}",
     "{header.name}",
@@ -87,6 +88,9 @@ test("the view draws the pure file's model and writes no sentence of its own", (
   }
   assert.ok(VIEW.includes("view.callNotes.map("));
   assert.ok(VIEW.includes("view.limits.map("));
+  // The free trial is one line of the pure file's, drawn only when there is one, and never worded here.
+  assert.equal(VIEW.split("{view.trialLine && ").length - 1, 2, "under the plans, or under the one price");
+  assert.equal(/free trial|Try \d|uses free/i.test(VIEW.replace(/\{\/\*[\s\S]*?\*\/\}/g, "")), false);
 });
 
 test("the view builds no address and no snippet by hand", () => {

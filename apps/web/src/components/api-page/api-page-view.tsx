@@ -247,6 +247,8 @@ export function ApiPageView({ handle, initial }: ApiPageViewProps) {
             </ul>
             {view.payAsYouGo && <p className="font-medium text-foreground">{view.payAsYouGo}</p>}
             <p>{view.priceNote}</p>
+            {/* The listing's free trial, in one line. It is started on the agent's page, linked just below. */}
+            {view.trialLine && <p>{view.trialLine}</p>}
             <p>
               {API_PAGE_WORDS.startPlan}{" "}
               <Link
@@ -261,6 +263,18 @@ export function ApiPageView({ handle, initial }: ApiPageViewProps) {
           <Part id="api-price" heading={API_PAGE_HEADINGS.price}>
             {view.priceLine && <p className="text-base font-semibold text-foreground">{view.priceLine}</p>}
             <p>{view.priceNote}</p>
+            {/* A free trial beside a price with no plans: the same line, with the way to the agent's page. */}
+            {view.trialLine && (
+              <p>
+                {view.trialLine}{" "}
+                <Link
+                  href={view.agentHref}
+                  className="rounded text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  {API_PAGE_WORDS.agentPage}
+                </Link>
+              </p>
+            )}
           </Part>
         )}
 

@@ -694,6 +694,25 @@ test("what a use cost", () => {
   );
   assert.equal(chargeLine({ chargedCents: 10, balanceCents: null, access: "listing_pricing" }, "run"), "This run cost $0.10.");
   assert.equal(chargeLine({ chargedCents: 0, balanceCents: 490, access: "subscribed" }, "message"), "Included in your subscription.");
+  // On a listing's free trial: its own uses, then the price per use for someone who agreed to it.
+  const trialUse = {
+    id: "t1",
+    trial: true,
+    includedUses: 20,
+    carriedUses: 0,
+    usedUses: 9,
+    remainingUses: 11,
+    extraUsePriceCents: null,
+    warning: null,
+  };
+  assert.equal(
+    chargeLine({ chargedCents: 0, balanceCents: 490, access: "subscribed", plan: { ...trialUse, use: "included" } }, "message"),
+    "Included in your free trial.",
+  );
+  assert.equal(
+    chargeLine({ chargedCents: 5, balanceCents: 485, access: "subscribed", plan: { ...trialUse, use: "extra", usedUses: 20, remainingUses: 0 } }, "message"),
+    "Charged $0.05.",
+  );
 });
 
 test("dates read as the plan writes them", () => {
@@ -813,7 +832,7 @@ test("the gate draws the page from the view that knows plans, and a plan's words
   const gate = publicAgent("paid-gate.tsx");
   assert.match(
     gate,
-    /const \{ view, plans, moveUp \} = useMemo\(\s*\(\) => planPageView\(\{ authed: signedIn, access: signedIn \? access : null, page: terms, kind \}\)/,
+    /const \{ view, plans, moveUp, trial \} = useMemo\(\s*\(\) => planPageView\(\{ authed: signedIn, access: signedIn \? access : null, page: terms, kind \}\)/,
   );
   // The count beside the sentence, the cards before pay as you go, and the cards behind "See plans".
   assert.match(gate, /\{plans\.countLine && <p[^>]*>\{plans\.countLine\}<\/p>\}/);
@@ -860,7 +879,9 @@ test("the gate starts a plan only with the terms of the card it showed, once, an
   assert.match(gate, /description=\{shownPlan\.dialog\.body\}/);
   assert.match(gate, /onConfirm=\{\(\) => agreeToPlan\(shownPlan\)\}/);
   assert.match(gate, /marketplaceApi\.startPlan\(agreed\.listingId, planTermsOf\(agreed\.card\)\)/);
-  assert.equal(gate.split("marketplaceApi.startPlan(").length - 1, 1, "one place starts a plan");
+  // The one other start through that call is the free trial's, with the trial's own terms (pinned below).
+  assert.equal(gate.split("marketplaceApi.startPlan(").length - 1, 2, "one place starts a plan, one the free trial");
+  assert.equal(gate.split("planTermsOf(agreed.card)").length - 1, 2, "a card's terms go to a start and to a move, and nowhere else");
   assert.equal(gate.split("planStartDialog(").length - 1, 1, "one place makes its dialog");
 
   const start = gate.slice(gate.indexOf("const agreeToPlan = useCallback"), gate.indexOf("const pressPlan = useCallback"));
@@ -971,4 +992,116 @@ test("the marketplace says plans in the words of lib/listing-cta, and only for a
   assert.match(page, /\{cta\.priceNote && <p[^>]*>\{cta\.priceNote\}<\/p>\}/);
   // No sentence of a plan is written in these screens.
   for (const source of [cards, mine, page]) assert.doesNotMatch(source, /Plans from|for 30 days/);
+});
+
+// ============================================
+// The free trial: its words here, and source pins of the gate
+// ============================================
+
+test("a trial that ended is said as a trial, and a plan that ended as a plan", () => {
+  assert.equal(PAID_USE_MESSAGES.trialEnded, "Your free trial ended. Choose a plan or pay per use to keep using it.");
+  const ended = (extra: Partial<PaidUseAccessState>) =>
+    paidView({ authed: true, access: state("plan_ended", extra), page: PAGE, kind: "chat" });
+  const trial = ended({ trialEnded: true });
+  assert.equal(trial.kind, "plan_ended");
+  assert.equal(trial.sentence, PAID_USE_MESSAGES.trialEnded);
+  // The action is the one a plan that ended has: pay per use, asked first.
+  assert.deepEqual(trial.action, { kind: "start", label: "Start using" });
+  assert.equal(ended({ trialEnded: true, canAccept: false }).sentence, `${PAID_USE_MESSAGES.trialEnded} ${PAID_USE_MESSAGES.askAdmin}`);
+  assert.equal(ended({ trialEnded: false }).sentence, PAID_USE_MESSAGES.planEnded);
+  assert.equal(ended({}).sentence, PAID_USE_MESSAGES.planEnded);
+  // Only where a plan ended: the flag changes no other page.
+  for (const access of ["none", "listing_pricing", "pricing_changed", "subscribed", "not_offered"] as const) {
+    assert.deepEqual(
+      paidView({ authed: true, access: state(access, { trialEnded: true }), page: PAGE, kind: "chat" }),
+      paidView({ authed: true, access: state(access), page: PAGE, kind: "chat" }),
+      access,
+    );
+  }
+});
+
+test("the refusals of a free trial have a sentence and the right action when the API sends none", () => {
+  const bare = (error: string) =>
+    paidRefusalNotice({ status: 409, refusal: { error, message: "" } as PaidUseRefusal, act: "start", unit: "message" });
+  assert.equal(bare("trial_already_used").message, "You have already used the free trial of this agent. Choose a plan or pay per use to keep using it.");
+  assert.deepEqual(bare("trial_already_used").action, { kind: "none", label: null });
+  assert.equal(bare("trial_needs_credits").message, "Add credits to your account once to start a free trial. The trial itself costs nothing.");
+  assert.deepEqual(bare("trial_needs_credits").action, { kind: "add_credits", label: "Add credits" });
+  assert.equal(bare("trial_cannot_move").message, "You are on a free trial. Start the plan you want: nothing of the trial is carried over.");
+  // The API's own sentence wins when it sends one.
+  const said = paidRefusalNotice({
+    status: 409,
+    refusal: { error: "trial_already_used", message: "As the API said it." } as PaidUseRefusal,
+    act: "start",
+    unit: "message",
+  });
+  assert.equal(said.message, "As the API said it.");
+});
+
+test("the gate draws the free trial above the cards from the view, and words none of it", () => {
+  const gate = publicAgent("paid-gate.tsx");
+  const block = gate.slice(gate.indexOf("{trial.offer && ("), gate.indexOf('plans.place === "first" && ('));
+  assert.ok(block.length > 0, "above the cards");
+  // Under the sentence, inside the branch the pause replaces, before today's sign-in and start actions.
+  assert.ok(gate.indexOf("{trial.offer && (") > gate.indexOf("{view.sentence}"));
+  assert.ok(gate.indexOf("{trial.offer && (") > gate.indexOf("{PUBLIC_PAUSED_NOTICE}"));
+  assert.ok(gate.indexOf("{trial.offer && (") < gate.indexOf('view.action.kind === "signin" && ('));
+  assert.match(block, /\{trial\.offer\.line\}/);
+  assert.match(block, /\{trial\.offer\.note && <p[^>]*>\{trial\.offer\.note\}<\/p>\}/);
+  // The button only for someone who may start it; the way to add credits only when that is what is missing.
+  assert.match(block, /\{trial\.offer\.kind === "start" && \(\s*<Button[\s\S]*?disabled=\{busy\}[\s\S]*?onClick=\{pressTrial\}[\s\S]*?\{TRIAL_WORDS\.startButton\}/);
+  assert.match(block, /\{trial\.offer\.kind === "needs_credits" && \([\s\S]*?PAID_USE_MESSAGES\.addCredits, href: ADD_CREDITS_HREF/);
+  assert.equal(block.split("<Button").length - 1, 1, "one button on the offer");
+  // Signed out, the offer adds no action: the page's own sign-in is the one below.
+  assert.doesNotMatch(block, /signInHref|registerHref/);
+  // While on the trial: what a use costs after the free ones, under the count.
+  assert.match(gate, /\{trial\.afterLine && <p[^>]*>\{trial\.afterLine\}<\/p>\}/);
+  assert.ok(gate.indexOf("{trial.afterLine && ") > gate.indexOf("{plans.countLine && <p"));
+  assert.ok(gate.indexOf("{trial.afterLine && ") < gate.indexOf("{moveUp && ("));
+  // No sentence of a trial is written in a screen, and "Try it free first" is the link it always was.
+  for (const file of ["paid-gate.tsx", "plan-cards.tsx"]) {
+    const drawn = publicAgent(file).replace(/\{\/\*[\s\S]*?\*\/\}/g, "").replace(/^\s*(\/\/|\*|\/\*).*$/gm, "");
+    assert.doesNotMatch(drawn, /Start the free trial|uses free|trial uses left|Your free trial|free trial ended|Nothing is charged/i, file);
+  }
+  assert.match(gate, /<Link\s+href=\{tryFreeHref\(terms\.listingSlug\)\}[\s\S]*?\{PAID_USE_MESSAGES\.tryFree\}/);
+  assert.equal(gate.split("tryFreeHref(").length - 1, 1);
+});
+
+test("the gate starts the free trial only with the terms of the trial it showed, once, and reads the access after", () => {
+  const gate = publicAgent("paid-gate.tsx");
+  // The dialog is made from the trial on the page at the press, and that same trial is what is held.
+  const press = gate.slice(gate.indexOf("const pressTrial = useCallback"), gate.indexOf("const canMoveUp ="));
+  assert.ok(press.length > 0);
+  assert.match(press, /const offer = trial\.offer;\s*if \(!access \|\| offer\?\.kind !== "start"\) return;/);
+  assert.match(press, /setShownTrial\(\{ listingId: access\.listingId, trial: offer\.trial, dialog: trialStartDialog\(offer\.trial, offer\.after\) \}\)/, "with what a use costs this person after the free ones");
+  // A press sends nothing: the dialog asks first.
+  assert.doesNotMatch(press, /marketplaceApi|startPlan|startUsing/);
+  assert.equal(gate.split("trialStartDialog(").length - 1, 1, "one place makes its dialog");
+  assert.match(gate, /description=\{shownTrial\.dialog\.body\}/);
+  assert.match(gate, /onConfirm=\{\(\) => agreeToTrial\(shownTrial\)\}/);
+
+  const start = gate.slice(gate.indexOf("const agreeToTrial = useCallback"), gate.indexOf("const pressTrial = useCallback"));
+  assert.ok(start.length > 0);
+  // The trial's own terms: no price, no price for an extra use (trialTermsOf, lib/use-plans.ts).
+  assert.match(start, /marketplaceApi\.startPlan\(agreed\.listingId, trialTermsOf\(agreed\.trial\)\)/);
+  assert.equal(gate.split("trialTermsOf(").length - 1, 1, "one place starts the free trial");
+  // A second press while the call runs starts nothing.
+  assert.match(start, /if \(startingTrial\.current\) return;\s*startingTrial\.current = true;/);
+  // A refusal: the API's sentence (with Add credits where the notice says so), and the page made true from it.
+  assert.match(start, /setNotice\(planStartNotice\(\{ status: error instanceof ApiError \? error\.status : 0, refusal, unit \}\)\)/);
+  assert.match(start, /setAccess\(\(held\) => accessAfterRefusal\(held, refusal\)\)/);
+  // Started or refused, the access is read again.
+  assert.match(start, /finally \{\s*await readAccess\(\);\s*startingTrial\.current = false;/);
+  // Nothing in a start reads the page again to decide what to send, and a trial start never agrees to a price.
+  assert.doesNotMatch(start, /trial\.offer|access\.trial|terms\.trial|plans\./);
+  assert.doesNotMatch(start, /startUsing|expectedTerms|acceptNewPricing|movePlan|planTermsOf/);
+});
+
+test("a refusal's action in a panel is read from the view that knows the free trial", () => {
+  const gate = publicAgent("paid-gate.tsx");
+  const follow = gate.slice(gate.indexOf("const followUp = useCallback"), gate.indexOf("const toPanel = useCallback"));
+  // On a trial, accepting a price that went up is the action of planPageView's view, not of paidView's.
+  assert.match(follow, /const current = planPageView\(\{ authed: true, access: state, page: terms, kind \}\)\.view;/);
+  // A button that named a price still agrees to that price and no other.
+  assert.match(follow, /named\.model === current\.price\.model && named\.cents === current\.price\.cents/);
 });

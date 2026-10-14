@@ -303,16 +303,27 @@ function sourceFiles(dir: string): string[] {
 
 test("in the source: a reference error string is written as a literal in x402Wire.ts only", () => {
   const strings = Object.values(R);
-  for (const name of PURE.filter((n) => n !== "x402Wire.ts")) {
-    const source = readFileSync(join(SERVICES, name), "utf8");
+  // The door's core, and every file that builds a PAYMENT-RESPONSE, names
+  // a reason only through X402_ERROR_REASONS.
+  const src = fileURLToPath(new URL("../", import.meta.url));
+  const responders = sourceFiles(src)
+    .filter((path) => !path.endsWith(join("services", "x402Wire.ts")))
+    .filter((path) => readFileSync(path, "utf8").includes("encodePaymentResponse("));
+  assert.ok(responders.includes(join(SERVICES, "paidUseX402.ts")), "the door's core builds PAYMENT-RESPONSE");
+  const files = new Set([
+    ...PURE.filter((n) => n !== "x402Wire.ts").map((name) => join(SERVICES, name)),
+    join(SERVICES, "paidUseX402.ts"),
+    ...responders,
+  ]);
+  for (const path of files) {
+    const source = readFileSync(path, "utf8");
     for (const value of strings) {
-      assert.equal(new RegExp(`["'\`]${value}["'\`]`).test(source), false, `${name} writes "${value}"`);
+      assert.equal(new RegExp(`["'\`]${value}["'\`]`).test(source), false, `${path} writes "${value}"`);
     }
   }
   // The strings of the Solana scheme are the door's alone: no other file of
   // the API writes one.
   const distinctive = strings.filter((value) => value.startsWith("invalid_exact_svm_") || value === "fee_payer_not_managed_by_facilitator");
-  const src = fileURLToPath(new URL("../", import.meta.url));
   for (const path of sourceFiles(src)) {
     if (path.endsWith(join("services", "x402Wire.ts"))) continue;
     const source = readFileSync(path, "utf8");

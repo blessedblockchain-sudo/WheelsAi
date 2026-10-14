@@ -244,6 +244,14 @@ test("in the source: the fee payer is derived only where it signs, its test and 
   }
 });
 
+test("in the source: the door's core hands the payment to its injected signer and signs nothing itself", () => {
+  const core = readFileSync(join(SRC, "services", "paidUseX402.ts"), "utf8");
+  assert.equal(/\.sign\(|partialSign|addSignature|nacl\.sign|signTransaction/.test(core), false);
+  assert.equal(core.includes("deriveX402FeePayerKeypair"), false);
+  // The one call that signs is the injected signer's.
+  assert.match(core, /deps\.signAsFeePayer\(transactionB64, requirements\)/);
+});
+
 test("in the source: the fee payer's file reads no settings and is plain ASCII", () => {
   const source = readFileSync(join(SRC, "services", "x402FeePayer.ts"), "utf8");
   assert.equal(/process\.env|config\/env|lib\/solana\.js|new Connection|getSolanaConnection/.test(source), false);

@@ -95,14 +95,46 @@ test("the Sell part finds the workflow's listing by its id and asks the question
 
 test("the Sell part saves the listing first, its plans second, and reads my listings again after", () => {
   const save = SELL.slice(SELL.indexOf("async function save()"), SELL.indexOf("async function stop()"));
-  const listing = save.indexOf("marketplaceApi.updateListing(listing.id, sellUpdateOf(built.save, listing))");
-  const created = save.indexOf("marketplaceApi.createListing(firstWorkflowListingOf(workflow, line ?? \"\", built.save))");
+  const listing = save.indexOf("marketplaceApi.updateListing(listing.id, workflowListingUpdateOf(built.save, wordsSave.words, listing))");
+  const created = save.indexOf("marketplaceApi.createListing(firstWorkflowListingOf(workflow.id, words, built.save))");
   const plans = save.indexOf("marketplaceApi.setListingPlans(savedListing.id, plansSave.plans, plansSave.ended)");
   const reread = save.indexOf("await load(plansProblem !== null);");
   assert.ok(listing > 0 && created > 0 && plans > listing && plans > created && reread > plans);
   // A refused save says the API's sentence on its field, or whole when it is about no field.
   assert.match(save, /const fieldErrors = fields \? sellFieldErrors\(fields\) : \{\};/);
-  assert.match(save, /if \(Object\.keys\(fieldErrors\)\.length === 0\) setError\(getErrorMessage\(err,/);
+  assert.match(save, /if \(Object\.keys\(fieldErrors\)\.length === 0 && Object\.keys\(wordFieldErrors\)\.length === 0\) \{\s+setError\(getErrorMessage\(err,/);
+});
+
+test("the listing's title and one line are fields of the Sell part, before the first save and after it", () => {
+  // Drawn in both shapes of the card, before the question; the box shown only for a short description is gone.
+  assert.equal(SELL.split("{listingFields}").length, 3, "drawn in both shapes of the card");
+  assert.match(SELL, /\{notSellableNotice\}\s+\{listingFields\}\s+\{question\}/);
+  assert.equal(/lineDraft|knownLine|WORDS\.describe|sellLineOf/.test(SELL), false);
+  // Each has a label, its limit, and the API's sentence or the check's under it.
+  assert.match(SELL, /<Label htmlFor=\{`\$\{id\}-title`\}>\{WORKFLOW_LISTING_WORDS\.titleLabel\}<\/Label>/);
+  assert.match(SELL, /<Label htmlFor=\{`\$\{id\}-line`\}>\{WORKFLOW_LISTING_WORDS\.lineLabel\}<\/Label>/);
+  assert.match(SELL, /maxLength=\{LISTING_TITLE_MAX\}/);
+  assert.match(SELL, /maxLength=\{LISTING_LINE_MAX\}/);
+  assert.match(SELL, /\{wordErrors\.title \? \(/);
+  assert.match(SELL, /\{wordErrors\.line \? \(/);
+  // Filled from the workflow before the first save, from the listing as my listings reads it after.
+  assert.match(SELL, /useState<ListingWordsForm>\(\(\) => listingWordsFormOf\(workflow, null\)\)/);
+  assert.match(SELL, /if \(listing\) setWords\(savedListingWordsOf\(listing\)\);/);
+  assert.match(SELL, /const savedWords = listing \? savedListingWordsOf\(listing\) : null;/);
+  // A change of either enables Save.
+  assert.match(SELL, /sameSellForm\(form, baseline\) && plansUnchanged && \(savedWords === null \|\| sameListingWords\(words, savedWords\)\)/);
+});
+
+test("the title and the line are checked before anything is sent, and a refusal of either is said under it", () => {
+  const save = SELL.slice(SELL.indexOf("async function save()"), SELL.indexOf("async function stop()"));
+  const checked = save.indexOf("const wordsSave = listingWordsSaveOf(words, savedWords);");
+  assert.ok(checked > 0 && checked < save.indexOf('setBusy("save");'));
+  assert.match(save, /if \(!wordsSave\.ok\) \{\s+setWordErrors\(wordsSave\.errors\);/);
+  assert.match(save, /const wordFieldErrors = fields \? listingWordsFieldErrors\(fields\) : \{\};/);
+  assert.match(save, /setWordErrors\(wordFieldErrors\);/);
+  // The first listing takes the words of the fields, checked first, never the workflow's name or description.
+  assert.ok(checked < save.indexOf("firstWorkflowListingOf(workflow.id, words, built.save)"));
+  assert.equal(/workflow\.name|workflow\.description/.test(save), false);
 });
 
 test("once on sale it shows the buyer's page and model id by the LISTING's slug, never the workflow's own", () => {
@@ -198,6 +230,21 @@ test("a workflow listing is drawn nowhere on its page with the words of an agent
     .replace(/\bagentListing\b/g, "");
   const words = drawn.match(/[^\n]*\bagents?\b[^\n]*/gi) ?? [];
   assert.deepEqual(words, []);
+});
+
+test("before a listing is known its page says a listing, never an agent", () => {
+  const skeleton = LISTING.slice(LISTING.indexOf("function ListingDetailSkeleton()"), LISTING.indexOf("export default function"));
+  const unknown = LISTING.slice(LISTING.indexOf("if (isLoading) {"), LISTING.indexOf("const parts = listingPageParts(listing);"));
+  assert.ok(skeleton.length > 0 && unknown.length > 0);
+  for (const [name, part] of [
+    ["the placeholder", skeleton],
+    ["not found and a failed load", unknown],
+  ] as const) {
+    assert.deepEqual(code(part).match(/[^\n]*\bagents?\b[^\n]*/gi) ?? [], [], name);
+  }
+  assert.match(skeleton, /<span className="sr-only">Loading<\/span>/);
+  assert.match(unknown, /title="Listing not found"\s+description="This listing does not exist or has been removed\."/);
+  assert.match(unknown, /title="Couldn't load this listing"/);
 });
 
 // ============================================

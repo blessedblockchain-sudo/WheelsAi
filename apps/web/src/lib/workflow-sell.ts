@@ -14,9 +14,15 @@
  */
 import { productKindOf, type MarketplaceProductKind } from "./api";
 import { formatCents } from "./jobs";
+import { LISTING_TITLE_MIN } from "./listing-draft";
 import {
+  LISTING_LINE_MAX,
+  LISTING_LINE_MIN,
   LISTING_TITLE_MAX,
+  SELL_LINE_TOO_SHORT,
   saleStanding,
+  sellLineOf,
+  sellUpdateOf,
   sellWordsOf,
   type SaleStanding,
   type SellListing,
@@ -154,24 +160,176 @@ export function listingForWorkflow<T extends OwnListingLike>(listings: readonly 
   return listings.find((listing) => productKindOf(listing) === "workflow" && listing.orchestrationId === workflowId) ?? null;
 }
 
+// ============================================
+// Its title and its one line
+// ============================================
+
+/** The two fields of the Sell part that name and describe the listing, and why a value is refused. */
+export const WORKFLOW_LISTING_WORDS = {
+  titleLabel: "Title",
+  titleHint: "Buyers see it as the name of this workflow. Its page address is made from it.",
+  /** Once the listing exists: the slug was made at the first save and a change of title keeps it. */
+  titleHintListed: "Buyers see it as the name of this workflow. Changing it does not change its page address.",
+  lineLabel: "One line",
+  titlePlaceholder: "Weekly report",
+  linePlaceholder: "Turns your meeting notes into a weekly report",
+  titleTooShort: `Give the listing a title of at least ${LISTING_TITLE_MIN} characters.`,
+  titleTooLong: `Keep the title to ${LISTING_TITLE_MAX} characters or fewer.`,
+  /** The API's own sentence for a title that makes an empty slug (services/workflowListing.ts). */
+  titleNoLetters: "Give the listing a title with letters or numbers.",
+  lineTooShort: SELL_LINE_TOO_SHORT,
+  lineTooLong: `Keep this line to ${LISTING_LINE_MAX} characters or fewer.`,
+} as const;
+
+/** The title and the one line as typed. */
+export interface ListingWordsForm {
+  title: string;
+  line: string;
+}
+
+/** A sentence under the title or the line. */
+export interface ListingWordsErrors {
+  title?: string;
+  line?: string;
+}
+
+/** The two fields of a listing that exists: its own title and line, as my listings reads them. */
+export function savedListingWordsOf(listing: { title: string; shortDescription: string }): ListingWordsForm {
+  return { title: listing.title, line: listing.shortDescription };
+}
+
+/** A text with every run of white space (line breaks too) made one space, and its ends trimmed. */
+function oneLineOf(text: string | null | undefined): string {
+  return (text ?? "").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * The two fields as they open. With a listing, its own title and line.
+ * Without one, what the first save would take: the workflow's name cut to
+ * the longest title, and its description when it is long enough for a
+ * line, else nothing for the creator to fill. Every run of white space is
+ * made one space first: the fields are one-line inputs, which drop line
+ * breaks from what they show, so the check and the request must not hold
+ * text the creator cannot see.
+ */
+export function listingWordsFormOf(
+  workflow: { name: string; description?: string | null },
+  listing: { title: string; shortDescription: string } | null | undefined,
+): ListingWordsForm {
+  if (listing) return savedListingWordsOf(listing);
+  return {
+    title: oneLineOf(workflow.name).slice(0, LISTING_TITLE_MAX).trim(),
+    line: sellLineOf([oneLineOf(workflow.description)]) ?? "",
+  };
+}
+
+/**
+ * Why a title is refused, as the API refuses it: from 3 to 100 characters,
+ * and with a letter or a digit, since the buyer's address is made from it
+ * (lowercased, every run of anything else made one dash). null when it is
+ * fine. Checked on the trimmed title, which is what is sent.
+ */
+export function listingTitleProblem(title: string): string | null {
+  const trimmed = title.trim();
+  if (trimmed.length < LISTING_TITLE_MIN) return WORKFLOW_LISTING_WORDS.titleTooShort;
+  if (trimmed.length > LISTING_TITLE_MAX) return WORKFLOW_LISTING_WORDS.titleTooLong;
+  if (!/[a-z0-9]/.test(trimmed.toLowerCase())) return WORKFLOW_LISTING_WORDS.titleNoLetters;
+  return null;
+}
+
+/** Why a line is refused, as the API refuses it: from 10 to 280 characters. null when it is fine. */
+export function listingLineProblem(line: string): string | null {
+  const trimmed = line.trim();
+  if (trimmed.length < LISTING_LINE_MIN) return WORKFLOW_LISTING_WORDS.lineTooShort;
+  if (trimmed.length > LISTING_LINE_MAX) return WORKFLOW_LISTING_WORDS.lineTooLong;
+  return null;
+}
+
+/** Whether two states of the fields would send the same thing. */
+export function sameListingWords(a: ListingWordsForm, b: ListingWordsForm): boolean {
+  return a.title.trim() === b.title.trim() && a.line.trim() === b.line.trim();
+}
+
+/** What the listing routes take of the two fields: the trimmed text of each one that is sent. */
+export interface ListingWordsSave {
+  title?: string;
+  shortDescription?: string;
+}
+
+export type ListingWordsCheck = { ok: true; words: ListingWordsSave } | { ok: false; errors: ListingWordsErrors };
+
+/**
+ * What the two fields send, or why they cannot be sent, each sentence under
+ * its field. A first listing (`saved` null) sends both. A listing that
+ * exists sends only what changed from `saved`, so a title the API took
+ * once is never held against a change of price.
+ */
+export function listingWordsSaveOf(form: ListingWordsForm, saved: ListingWordsForm | null): ListingWordsCheck {
+  const sendTitle = saved === null || form.title.trim() !== saved.title.trim();
+  const sendLine = saved === null || form.line.trim() !== saved.line.trim();
+  const errors: ListingWordsErrors = {};
+  const titleProblem = sendTitle ? listingTitleProblem(form.title) : null;
+  const lineProblem = sendLine ? listingLineProblem(form.line) : null;
+  if (titleProblem) errors.title = titleProblem;
+  if (lineProblem) errors.line = lineProblem;
+  if (titleProblem || lineProblem) return { ok: false, errors };
+  return {
+    ok: true,
+    words: {
+      ...(sendTitle && { title: form.title.trim() }),
+      ...(sendLine && { shortDescription: form.line.trim() }),
+    },
+  };
+}
+
+/** The listing routes' names for the two fields, and the field of the Sell part each one is about. */
+const LISTING_WORDS_FIELD_OF: Record<string, keyof ListingWordsErrors> = {
+  title: "title",
+  shortDescription: "line",
+};
+
+/** The API's sentences of a refused save (400 `validation_failed`) that are about the title or the line. */
+export function listingWordsFieldErrors(fields: Record<string, string>): ListingWordsErrors {
+  const errors: ListingWordsErrors = {};
+  for (const [path, sentence] of Object.entries(fields)) {
+    const field = Object.prototype.hasOwnProperty.call(LISTING_WORDS_FIELD_OF, path) ? LISTING_WORDS_FIELD_OF[path] : undefined;
+    if (field) errors[field] ??= sentence;
+  }
+  return errors;
+}
+
 /**
  * The body that makes a workflow's first listing from its API tab: the
- * workflow, a title from its name, its line, and the answer to the question,
- * put on sale at once.
+ * workflow, the title and the line of the two fields as they are sent
+ * (trimmed, once `listingWordsSaveOf(words, null)` took them), and the answer
+ * to the question, put on sale at once.
  */
 export function firstWorkflowListingOf(
-  workflow: { id: string; name: string },
-  line: string,
+  workflowId: string,
+  words: ListingWordsForm,
   save: SellSave,
 ): SellSave & { orchestrationId: string; title: string; shortDescription: string; category: "other"; publish: true } {
   return {
-    orchestrationId: workflow.id,
-    title: workflow.name.trim().slice(0, LISTING_TITLE_MAX),
-    shortDescription: line,
+    orchestrationId: workflowId,
+    title: words.title.trim(),
+    shortDescription: words.line.trim(),
     category: "other",
     ...save,
     publish: true,
   };
+}
+
+/**
+ * The body of a save on a workflow's listing that exists: the answer to the
+ * question (with publish when it is not on sale), and the title and the line
+ * when they changed.
+ */
+export function workflowListingUpdateOf(
+  save: SellSave,
+  words: ListingWordsSave,
+  listing: { status?: string } | null | undefined,
+): SellSave & ListingWordsSave & { publish?: true } {
+  return { ...sellUpdateOf(save, listing), ...words };
 }
 
 /** Where the creator edits a listing of a workflow: the workflow's API tab. null for any other listing. */

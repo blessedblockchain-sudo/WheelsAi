@@ -164,7 +164,7 @@ function ReviewListSkeleton() {
 function ListingDetailSkeleton() {
   return (
     <div className="min-h-screen bg-background" aria-busy="true">
-      <span className="sr-only">Loading agent</span>
+      <span className="sr-only">Loading</span>
       <header className="border-b bg-card">
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
           <Skeleton className="h-8 w-36" />
@@ -483,14 +483,14 @@ export default function ListingDetailPage() {
           {notFound ? (
             <EmptyState
               icon={Cpu}
-              title="Agent not found"
-              description="The agent you're looking for doesn't exist or has been removed."
+              title="Listing not found"
+              description="This listing does not exist or has been removed."
               actionLabel="Back to Marketplace"
               actionHref="/marketplace"
             />
           ) : (
             <ErrorState
-              title="Couldn't load this agent"
+              title="Couldn't load this listing"
               error={loadError}
               onRetry={() => void loadData()}
               actionLabel="Back to Marketplace"

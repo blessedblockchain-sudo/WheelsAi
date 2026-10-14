@@ -28,7 +28,7 @@ import {
 import { codeOf } from "@/lib/agent-page";
 import {
   LISTING_LINE_MAX,
-  SELL_LINE_TOO_SHORT,
+  LISTING_TITLE_MAX,
   buildSellSave,
   buyerStats,
   earnedOf,
@@ -36,8 +36,6 @@ import {
   sameSellForm,
   sellFieldErrors,
   sellLimitsOf,
-  sellLineOf,
-  sellUpdateOf,
   sellWordsOf,
   type SellErrors,
   type SellForm,
@@ -61,10 +59,17 @@ import {
   type SavedPlan,
 } from "@/lib/sell-plans";
 import {
+  WORKFLOW_LISTING_WORDS,
   WORKFLOW_SELL_WORDS,
   firstWorkflowListingOf,
   listingForWorkflow,
+  listingWordsFieldErrors,
+  listingWordsFormOf,
+  listingWordsSaveOf,
   maxRunMinutesOf,
+  sameListingWords,
+  savedListingWordsOf,
+  workflowListingUpdateOf,
   workflowModelId,
   workflowPageAddress,
   workflowPagePath,
@@ -72,6 +77,8 @@ import {
   workflowSellLines,
   workflowSellProblem,
   workflowStopSellingSentence,
+  type ListingWordsErrors,
+  type ListingWordsForm,
 } from "@/lib/workflow-sell";
 
 type Revenue = Awaited<ReturnType<typeof marketplaceApi.getRevenue>>;
@@ -125,10 +132,12 @@ export function WorkflowSell({ workflow }: { workflow: OrchestrationDetail }) {
   // The last save of plans was refused because they changed somewhere else: a way to read them again is offered.
   const [plansStale, setPlansStale] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [lineDraft, setLineDraft] = useState("");
-  const [lineError, setLineError] = useState<string | null>(null);
+  // The listing's title and its one line, as typed: from the workflow before the first save, from the listing after.
+  const [words, setWords] = useState<ListingWordsForm>(() => listingWordsFormOf(workflow, null));
+  const [wordErrors, setWordErrors] = useState<ListingWordsErrors>({});
   const [busy, setBusy] = useState<"save" | "stop" | "reload" | null>(null);
   const statusRef = useRef<HTMLDivElement>(null);
+  const titleRef = useRef<HTMLInputElement>(null);
   const lineRef = useRef<HTMLInputElement>(null);
   const focusStatus = useRef(false);
   const mounted = useRef(true);
@@ -150,6 +159,9 @@ export function WorkflowSell({ workflow }: { workflow: OrchestrationDetail }) {
         setData({ listing, capabilities, revenue });
         setForm(formOfListing(listing, null, "workflow"));
         setErrors({});
+        // Once the listing exists its own words fill the fields; until then what was typed is kept.
+        if (listing) setWords(savedListingWordsOf(listing));
+        setWordErrors({});
         if (!keepPlans) {
           setPlans(plansFormOf(listing));
           setPlansRead(savedPlansOf(listing));
@@ -208,16 +220,25 @@ export function WorkflowSell({ workflow }: { workflow: OrchestrationDetail }) {
   const onSale = status?.standing === "on_sale";
   // Why it cannot go on sale as it is now (disabled, no steps, too long a time limit); null when it can.
   const notSellable = workflowSellProblem(workflow, maxRunMinutes);
-  const knownLine = sellLineOf([listing?.shortDescription, workflow.description]);
   const baseline = formOfListing(listing, null, "workflow");
+  // The title and the line as the listing has them; null before the first save, which sends both.
+  const savedWords = listing ? savedListingWordsOf(listing) : null;
   // The listing's plans as they were last read, each with its subscribers. A save is measured against `plansRead`.
   const savedPlans = savedPlansOf(listing);
   const plansUnchanged = plansSaveOf({ sell: form, form: plans, saved: plansRead, limits: planLimits }).kind === "none";
-  const unchanged = sameSellForm(form, baseline) && plansUnchanged;
+  const unchanged =
+    sameSellForm(form, baseline) && plansUnchanged && (savedWords === null || sameListingWords(words, savedWords));
 
   function change(next: SellForm) {
     setForm(next);
     setErrors({});
+    setError(null);
+    setPlansStale(false);
+  }
+
+  function changeWords(field: keyof ListingWordsForm, value: string) {
+    setWords((current) => ({ ...current, [field]: value }));
+    setWordErrors((current) => ({ ...current, [field]: undefined }));
     setError(null);
     setPlansStale(false);
   }
@@ -259,29 +280,34 @@ export function WorkflowSell({ workflow }: { workflow: OrchestrationDetail }) {
       return;
     }
     setPlanErrors(noPlanErrors());
-    const line = sellLineOf([knownLine, lineDraft]);
-    if (!listing && !line) {
-      setLineError(SELL_LINE_TOO_SHORT);
-      lineRef.current?.focus();
+    // The title and the line, checked as the API checks them: a first listing sends both, a change what changed.
+    const wordsSave = listingWordsSaveOf(words, savedWords);
+    if (!wordsSave.ok) {
+      setWordErrors(wordsSave.errors);
+      (wordsSave.errors.title ? titleRef : lineRef).current?.focus();
       return;
     }
-    setLineError(null);
+    setWordErrors({});
 
     setBusy("save");
     let savedListing: MarketplaceListing;
     try {
       const saved = listing
-        ? await marketplaceApi.updateListing(listing.id, sellUpdateOf(built.save, listing))
-        : await marketplaceApi.createListing(firstWorkflowListingOf(workflow, line ?? "", built.save));
+        ? await marketplaceApi.updateListing(listing.id, workflowListingUpdateOf(built.save, wordsSave.words, listing))
+        : await marketplaceApi.createListing(firstWorkflowListingOf(workflow.id, words, built.save));
       savedListing = saved.listing;
     } catch (err) {
       if (!mounted.current) return;
       const fields = getValidationError(err)?.fields;
       const fieldErrors = fields ? sellFieldErrors(fields) : {};
+      const wordFieldErrors = fields ? listingWordsFieldErrors(fields) : {};
       setErrors(fieldErrors);
-      // The API's own sentence, as it came: a price under the floor, a title with no letters, a workflow
-      // that cannot be sold as it is.
-      if (Object.keys(fieldErrors).length === 0) setError(getErrorMessage(err, "That could not be saved. Try again."));
+      setWordErrors(wordFieldErrors);
+      // The API's own sentence, as it came: a price under the floor, a workflow that cannot be sold as it is.
+      // One about the title or the line is said under that field.
+      if (Object.keys(fieldErrors).length === 0 && Object.keys(wordFieldErrors).length === 0) {
+        setError(getErrorMessage(err, "That could not be saved. Try again."));
+      }
       setBusy(null);
       // Another tab or a teammate listed this workflow meanwhile: show that listing.
       if (codeOf(err) === "listing_exists") {
@@ -392,6 +418,58 @@ export function WorkflowSell({ workflow }: { workflow: OrchestrationDetail }) {
     </div>
   );
 
+  // The listing's name and its one line: what buyers see of it on the marketplace and on its page.
+  const listingFields = (
+    <div className="space-y-4">
+      <div className="space-y-1.5">
+        <Label htmlFor={`${id}-title`}>{WORKFLOW_LISTING_WORDS.titleLabel}</Label>
+        <Input
+          ref={titleRef}
+          id={`${id}-title`}
+          value={words.title}
+          maxLength={LISTING_TITLE_MAX}
+          placeholder={WORKFLOW_LISTING_WORDS.titlePlaceholder}
+          onChange={(event) => changeWords("title", event.target.value)}
+          aria-describedby={wordErrors.title ? `${id}-title-error` : `${id}-title-hint`}
+          aria-invalid={wordErrors.title ? true : undefined}
+          disabled={busy !== null}
+        />
+        {wordErrors.title ? (
+          <p id={`${id}-title-error`} role="alert" className="text-sm text-danger">
+            {wordErrors.title}
+          </p>
+        ) : (
+          <p id={`${id}-title-hint`} className="text-xs text-muted-foreground">
+            {listing ? WORKFLOW_LISTING_WORDS.titleHintListed : WORKFLOW_LISTING_WORDS.titleHint}
+          </p>
+        )}
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor={`${id}-line`}>{WORKFLOW_LISTING_WORDS.lineLabel}</Label>
+        <Input
+          ref={lineRef}
+          id={`${id}-line`}
+          value={words.line}
+          maxLength={LISTING_LINE_MAX}
+          placeholder={WORKFLOW_LISTING_WORDS.linePlaceholder}
+          onChange={(event) => changeWords("line", event.target.value)}
+          aria-describedby={wordErrors.line ? `${id}-line-error` : `${id}-line-hint`}
+          aria-invalid={wordErrors.line ? true : undefined}
+          disabled={busy !== null}
+        />
+        {wordErrors.line ? (
+          <p id={`${id}-line-error`} role="alert" className="text-sm text-danger">
+            {wordErrors.line}
+          </p>
+        ) : (
+          <p id={`${id}-line-hint`} className="text-xs text-muted-foreground">
+            {WORKFLOW_SELL_WORDS.lineHint}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+
   const header = (
     <CardHeader>
       <CardTitle className="text-base">{WORKFLOW_SELL_WORDS.title}</CardTitle>
@@ -477,6 +555,7 @@ export function WorkflowSell({ workflow }: { workflow: OrchestrationDetail }) {
 
           <div className="space-y-5 border-t pt-6">
             {notSellableNotice}
+            {listingFields}
             {question}
             {sellLines}
             {problem}
@@ -505,35 +584,8 @@ export function WorkflowSell({ workflow }: { workflow: OrchestrationDetail }) {
           </div>
         )}
         {notSellableNotice}
+        {listingFields}
         {question}
-        {!listing && !knownLine && (
-          <div className="space-y-1.5">
-            <Label htmlFor={`${id}-line`}>{WORDS.describe}</Label>
-            <Input
-              ref={lineRef}
-              id={`${id}-line`}
-              value={lineDraft}
-              maxLength={LISTING_LINE_MAX}
-              placeholder="Turns your meeting notes into a weekly report"
-              onChange={(event) => {
-                setLineDraft(event.target.value);
-                setLineError(null);
-              }}
-              aria-describedby={lineError ? `${id}-line-error` : `${id}-line-hint`}
-              aria-invalid={lineError ? true : undefined}
-              disabled={busy !== null}
-            />
-            {lineError ? (
-              <p id={`${id}-line-error`} role="alert" className="text-sm text-danger">
-                {lineError}
-              </p>
-            ) : (
-              <p id={`${id}-line-hint`} className="text-xs text-muted-foreground">
-                {WORKFLOW_SELL_WORDS.lineHint}
-              </p>
-            )}
-          </div>
-        )}
         {sellLines}
         {problem}
         <div className="flex flex-wrap items-center gap-2">

@@ -9,22 +9,32 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { buildSellSave, formOfListing } from "./sell-choice";
+import { LISTING_TITLE_MIN } from "./listing-draft";
+import { LISTING_LINE_MAX, LISTING_LINE_MIN, LISTING_TITLE_MAX, SELL_LINE_TOO_SHORT, buildSellSave, formOfListing } from "./sell-choice";
 import {
   PAID_RUN_LABEL,
   PAID_RUN_TRIGGER,
+  WORKFLOW_LISTING_WORDS,
   WORKFLOW_NOT_SELLABLE,
   WORKFLOW_SELL_LINES,
   WORKFLOW_SELL_WORDS,
   firstWorkflowListingOf,
   listingForWorkflow,
+  listingLineProblem,
+  listingTitleProblem,
+  listingWordsFieldErrors,
+  listingWordsFormOf,
+  listingWordsSaveOf,
   maxRunMinutesOf,
   ownAddressLine,
   ownListingEditHref,
   paidRunLimitLine,
   refusedForSale,
+  sameListingWords,
+  savedListingWordsOf,
   tooLongSentence,
   workflowEditHref,
+  workflowListingUpdateOf,
   workflowModelId,
   workflowPageAddress,
   workflowPagePath,
@@ -74,6 +84,7 @@ test("no sentence a creator or a list reads has an em dash, the word unlimited o
     ...Object.values(WORKFLOW_SELL_LINES),
     ...Object.values(WORKFLOW_SELL_WORDS),
     ...Object.values(WORKFLOW_NOT_SELLABLE),
+    ...Object.values(WORKFLOW_LISTING_WORDS),
     ...workflowSellLines(10),
     tooLongSentence(10),
     ownAddressLine("workflow/report"),
@@ -171,12 +182,15 @@ test("the listing of a workflow is found by orchestrationId among the organizati
   assert.equal(listingForWorkflow([{ ...agentListing, orchestrationId: "wf1" }], "wf1"), null);
 });
 
-test("a first listing sends the workflow, a title from its name, its line and the price, and goes on sale", () => {
+test("a first listing sends the workflow, the title and the line of its fields and the price, and goes on sale", () => {
   const built = buildSellSave(formOfListing(null, null, "workflow"), {}, LIMITS, "workflow");
   assert.equal(built.ok, false);
   const save = buildSellSave({ ...formOfListing(null, null, "workflow"), perUsePrice: "0.25" }, {}, LIMITS, "workflow");
   assert.ok(save.ok);
-  const body = firstWorkflowListingOf({ id: "wf1", name: `  ${"W".repeat(140)}  ` }, "Turns notes into a weekly report.", save.save);
+  // The fields open on what the first save took before they existed: a title from the name, cut to 100.
+  const form = listingWordsFormOf({ name: `  ${"W".repeat(140)}  `, description: "Turns notes into a weekly report." }, null);
+  assert.ok(listingWordsSaveOf(form, null).ok);
+  const body = firstWorkflowListingOf("wf1", form, save.save);
   assert.deepEqual(body, {
     orchestrationId: "wf1",
     title: "W".repeat(100),
@@ -187,6 +201,10 @@ test("a first listing sends the workflow, a title from its name, its line and th
     pricePerRequestCents: 25,
     publish: true,
   });
+  // What was typed is sent trimmed, as the check read it.
+  const typed = firstWorkflowListingOf("wf1", { title: "  Weekly report ", line: " Turns notes into a weekly report. " }, save.save);
+  assert.equal(typed.title, "Weekly report");
+  assert.equal(typed.shortDescription, "Turns notes into a weekly report.");
   assert.equal("agentId" in body, false);
   assert.equal("allowedTools" in body, false);
 });
@@ -201,6 +219,154 @@ test("Edit of a workflow's listing goes to the workflow's API tab; an agent's to
   assert.equal(ownListingEditHref({ id: "l0", agentId: "a1" }), "/dashboard/marketplace/publish?edit=l0");
   // A workflow's listing whose workflow was not said has nowhere else to go.
   assert.equal(workflowEditHref(own({ orchestrationId: undefined })), null);
+});
+
+// ============================================
+// Its title and its one line
+// ============================================
+
+test("before the first save the fields open on the workflow's name and description, as the first save took them", () => {
+  assert.deepEqual(listingWordsFormOf({ name: "  Weekly report  ", description: "  Turns notes into a weekly report.  " }, null), {
+    title: "Weekly report",
+    line: "Turns notes into a weekly report.",
+  });
+  // A description too short for a line, or none, leaves the line for the creator to write.
+  assert.deepEqual(listingWordsFormOf({ name: "Report", description: "Notes" }, null), { title: "Report", line: "" });
+  assert.deepEqual(listingWordsFormOf({ name: "Report", description: null }, null), { title: "Report", line: "" });
+  assert.deepEqual(listingWordsFormOf({ name: "Report" }, null), { title: "Report", line: "" });
+  // A description longer than a line is cut to the longest line.
+  assert.equal(listingWordsFormOf({ name: "Report", description: "x".repeat(400) }, null).line, "x".repeat(280));
+  // The fields are one-line inputs, which drop line breaks from what they show: the field, the check and the
+  // request hold the same text, with every run of white space made one space.
+  assert.equal(
+    listingWordsFormOf({ name: "Report", description: "Turns notes\ninto a weekly report." }, null).line,
+    "Turns notes into a weekly report.",
+  );
+  assert.equal(listingWordsFormOf({ name: "Weekly\n  report", description: null }, null).title, "Weekly report");
+  // Line breaks never count toward the shortest line: "a", nine breaks and "b" is "a b", too short.
+  assert.equal(listingWordsFormOf({ name: "Report", description: `a${"\n".repeat(9)}b` }, null).line, "");
+});
+
+test("once the listing exists the fields open on its own title and line, whatever the workflow is called", () => {
+  const listing = { title: "Weekly digest", shortDescription: "A digest of your week, every Monday." };
+  assert.deepEqual(listingWordsFormOf({ name: "Renamed workflow", description: "Something else entirely." }, listing), {
+    title: "Weekly digest",
+    line: "A digest of your week, every Monday.",
+  });
+  assert.deepEqual(savedListingWordsOf(listing), { title: "Weekly digest", line: "A digest of your week, every Monday." });
+});
+
+test("a title is checked as the API checks it: 3 to 100 characters, with a letter or a digit", () => {
+  assert.equal(listingTitleProblem("Weekly report"), null);
+  assert.equal(listingTitleProblem("abc"), null);
+  assert.equal(listingTitleProblem("A1!"), null);
+  assert.equal(listingTitleProblem("W".repeat(100)), null);
+  // Checked on what is sent, the trimmed title.
+  assert.equal(listingTitleProblem("  ab  "), "Give the listing a title of at least 3 characters.");
+  assert.equal(listingTitleProblem(""), WORKFLOW_LISTING_WORDS.titleTooShort);
+  assert.equal(listingTitleProblem("W".repeat(101)), "Keep the title to 100 characters or fewer.");
+  // A title that makes an empty slug: the API's own sentence.
+  for (const empty of ["!!!", "---", "   ***   ", "\u00e9\u00e9\u00e9"]) {
+    assert.equal(listingTitleProblem(empty), "Give the listing a title with letters or numbers.", empty);
+  }
+  // A letter outside a to z next to one inside still makes a slug.
+  assert.equal(listingTitleProblem("Caf\u00e9"), null);
+});
+
+test("a line is checked as the API checks it: 10 to 280 characters", () => {
+  assert.equal(listingLineProblem("Turns notes into a report."), null);
+  assert.equal(listingLineProblem("x".repeat(10)), null);
+  assert.equal(listingLineProblem("x".repeat(280)), null);
+  assert.equal(listingLineProblem("   short   "), SELL_LINE_TOO_SHORT);
+  assert.equal(listingLineProblem(""), "Write at least 10 characters.");
+  assert.equal(listingLineProblem("x".repeat(281)), "Keep this line to 280 characters or fewer.");
+});
+
+test("the limits and the empty-slug sentence are the API's own", () => {
+  const routes = apiSource("routes/marketplace.ts");
+  const create = routes.slice(routes.indexOf("const createListingSchema = z.object({"), routes.indexOf("pricingModel: z.enum("));
+  assert.match(create, new RegExp(`title: z\\.string\\(\\)\\.min\\(${LISTING_TITLE_MIN}\\)\\.max\\(${LISTING_TITLE_MAX}\\),`));
+  assert.match(create, new RegExp(`shortDescription: z\\.string\\(\\)\\.min\\(${LISTING_LINE_MIN}\\)\\.max\\(${LISTING_LINE_MAX}\\),`));
+  // A change takes the same fields, each optional.
+  assert.match(routes, /const updateListingSchema = createListingSchema\.omit\(\{ agentId: true, orchestrationId: true \}\)\.partial\(\);/);
+  assert.match(
+    apiSource("services/workflowListing.ts"),
+    new RegExp(`emptySlug: "${WORKFLOW_LISTING_WORDS.titleNoLetters.replace(/\./g, "\\.")}",`),
+  );
+  // The slug is the title lowercased, every run of anything but a to z and 0 to 9 made one dash.
+  const service = apiSource("services/marketplace.ts");
+  assert.match(service, /\.toLowerCase\(\)\s+\.replace\(\/\[\^a-z0-9\]\+\/g, "-"\)\s+\.replace\(\/\^-\|-\$\/g, ""\);/);
+});
+
+test("a first listing sends both fields, checked; a change sends only what changed", () => {
+  const typed = { title: "  Weekly report ", line: " Turns notes into a weekly report. " };
+  assert.deepEqual(listingWordsSaveOf(typed, null), {
+    ok: true,
+    words: { title: "Weekly report", shortDescription: "Turns notes into a weekly report." },
+  });
+  assert.deepEqual(listingWordsSaveOf({ title: "ab", line: "short" }, null), {
+    ok: false,
+    errors: { title: WORKFLOW_LISTING_WORDS.titleTooShort, line: SELL_LINE_TOO_SHORT },
+  });
+  assert.deepEqual(listingWordsSaveOf({ title: "Weekly report", line: "" }, null), {
+    ok: false,
+    errors: { line: SELL_LINE_TOO_SHORT },
+  });
+
+  const saved = { title: "Weekly report", line: "Turns notes into a weekly report." };
+  assert.deepEqual(listingWordsSaveOf(saved, saved), { ok: true, words: {} });
+  // Spaces around are not a change.
+  assert.deepEqual(listingWordsSaveOf({ title: " Weekly report ", line: saved.line }, saved), { ok: true, words: {} });
+  assert.deepEqual(listingWordsSaveOf({ ...saved, title: "Weekly digest" }, saved), { ok: true, words: { title: "Weekly digest" } });
+  assert.deepEqual(listingWordsSaveOf({ ...saved, line: "A digest of your week." }, saved), {
+    ok: true,
+    words: { shortDescription: "A digest of your week." },
+  });
+  assert.deepEqual(listingWordsSaveOf({ ...saved, title: "!!!" }, saved), {
+    ok: false,
+    errors: { title: WORKFLOW_LISTING_WORDS.titleNoLetters },
+  });
+  // A title the listing already has is never held against a change of price, even one the check would refuse now.
+  const odd = { title: "!!!", line: saved.line };
+  assert.deepEqual(listingWordsSaveOf(odd, odd), { ok: true, words: {} });
+});
+
+test("the fields are unchanged when only spaces around them changed", () => {
+  const saved = { title: "Weekly report", line: "Turns notes into a weekly report." };
+  assert.equal(sameListingWords(saved, { title: " Weekly report", line: "Turns notes into a weekly report.  " }), true);
+  assert.equal(sameListingWords(saved, { ...saved, title: "Weekly reports" }), false);
+  assert.equal(sameListingWords(saved, { ...saved, line: "Turns notes into a monthly report." }), false);
+});
+
+test("a change of a listing sends the answer to the question and the words that changed", () => {
+  const save = { sells: "use" as const, pricingModel: "per_request" as const, pricePerRequestCents: 25 };
+  assert.deepEqual(workflowListingUpdateOf(save, { title: "Weekly digest" }, { status: "published" }), {
+    ...save,
+    title: "Weekly digest",
+  });
+  assert.deepEqual(workflowListingUpdateOf(save, {}, { status: "published" }), save);
+  // Not on sale: it goes on sale in the same request, as the question's own save does.
+  assert.deepEqual(workflowListingUpdateOf(save, { shortDescription: "A digest of your week." }, { status: "archived" }), {
+    ...save,
+    publish: true,
+    shortDescription: "A digest of your week.",
+  });
+});
+
+test("the API's refusal of the title or the line is said under that field, and nothing else is", () => {
+  assert.deepEqual(
+    listingWordsFieldErrors({
+      title: "Give the listing a title with letters or numbers.",
+      shortDescription: '"shortDescription" must be at least 10 characters.',
+      pricePerRequestCents: "The price per run must be at least $0.05.",
+    }),
+    {
+      title: "Give the listing a title with letters or numbers.",
+      line: '"shortDescription" must be at least 10 characters.',
+    },
+  );
+  assert.deepEqual(listingWordsFieldErrors({ pricingModel: "x" }), {});
+  assert.deepEqual(listingWordsFieldErrors({ toString: "x", constructor: "y" }), {});
 });
 
 // ============================================

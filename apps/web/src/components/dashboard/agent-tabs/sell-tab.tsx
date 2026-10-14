@@ -374,8 +374,9 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
 
   const earned = listing ? earnedOf(revenue?.revenueByListing, listing.id) : null;
   const stats = listing ? buyerStats(listing) : [];
-  // One line for each plan of a listing sold per use. How many people are on each is the creator's to see.
-  const planLines = planSaleLines(listing);
+  // One line for each plan of a listing sold per use, and one for its trial of some uses at no price.
+  // How many people are on each is the creator's to see.
+  const planLines = planSaleLines(listing, planLimits);
 
   const question = (
     <WhoCanUse

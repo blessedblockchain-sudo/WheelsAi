@@ -108,7 +108,7 @@ export function WhoCanUse({
   // Plans go with "Pay per use" of the agent itself, and only once the listing's own were read.
   const plansShown = plans && plans.form.loaded && sellsWithPlans(form) ? plans : null;
   // The answer is moving away from "Pay per use": what the people on a plan keep.
-  const plansKept = plans ? plansKeptLine(listing ? { ...listing, plans: plans.saved } : null, form) : null;
+  const plansKept = plans ? plansKeptLine(listing ? { ...listing, plans: plans.saved } : null, form, plans.limits) : null;
 
   // What is sold changed: the control that did it is gone, so focus goes to what took its place.
   useEffect(() => {

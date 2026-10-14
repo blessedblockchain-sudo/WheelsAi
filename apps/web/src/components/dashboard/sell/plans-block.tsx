@@ -8,18 +8,26 @@ import { useConfirm } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Switch } from "@/components/ui/switch";
 import {
   PLAN_WORDS,
+  TRIAL_WORDS,
   addPlanRow,
   canAddPlan,
   endPlanDialog,
+  endTrialDialog,
   endingPlanLines,
   planChangedNote,
   planEarnLine,
   planPerUseLine,
   removePlanLabel,
   removePlanRow,
+  trialEndingLine,
+  trialFormOf,
+  trialNote,
+  trialProblemOf,
   withPlanRow,
+  withTrial,
   type PlanEnding,
   type PlanErrors,
   type PlanField,
@@ -47,11 +55,17 @@ export interface PlansBlockProps {
  * days, a number of uses and what happens when they run out. Nothing is
  * saved here: the rows go with the listing's own save, and a plan that was
  * taken away ends then.
+ *
+ * Under the rows, one switch: the listing's trial of some uses at no price,
+ * which a buyer starts once. It goes with the same save as one more plan.
  */
 export function PlansBlock({ form, onChange, errors, limits, saved, perUsePrice, disabled = false }: PlansBlockProps) {
   const id = useId();
   const confirm = useConfirm();
   const ending = endingPlanLines(form, saved);
+  const trial = trialFormOf(form);
+  const trialEnding = trialEndingLine(form, saved);
+  const trialProblem = trialProblemOf(form, errors);
   const addRef = useRef<HTMLButtonElement>(null);
   const focusAdd = useRef(false);
 
@@ -68,6 +82,13 @@ export function PlansBlock({ form, onChange, errors, limits, saved, perUsePrice,
     if (dialog && !(await confirm({ ...dialog, destructive: true }))) return;
     focusAdd.current = true;
     onChange(removePlanRow(form, row.key));
+  }
+
+  async function switchTrial(on: boolean) {
+    // Switching off a trial people are on: they are told what those people keep before it goes.
+    const dialog = on ? null : endTrialDialog(form, saved, limits);
+    if (dialog && !(await confirm({ ...dialog, destructive: true }))) return;
+    onChange(withTrial(form, { on }));
   }
 
   return (
@@ -110,6 +131,49 @@ export function PlansBlock({ form, onChange, errors, limits, saved, perUsePrice,
           {PLAN_WORDS.add}
         </Button>
       )}
+
+      <div className="space-y-3 rounded-md border bg-card p-4">
+        <div className="flex items-center justify-between gap-4">
+          <Label htmlFor={`${id}-trial`} className="text-sm font-normal text-foreground">
+            {TRIAL_WORDS.offer}
+          </Label>
+          <Switch id={`${id}-trial`} checked={trial.on} onCheckedChange={(on) => void switchTrial(on)} disabled={disabled} />
+        </div>
+
+        {/* Switched off, not yet saved: said beside the switch that did it. */}
+        {trialEnding && (
+          <p role="status" className="text-sm text-muted-foreground">
+            {trialEnding}
+          </p>
+        )}
+
+        {trial.on && (
+          <div className="space-y-1.5">
+            <Label htmlFor={`${id}-trial-uses`}>{TRIAL_WORDS.uses}</Label>
+            <Input
+              id={`${id}-trial-uses`}
+              type="text"
+              inputMode="numeric"
+              autoComplete="off"
+              className="max-w-48"
+              value={trial.uses}
+              placeholder="20"
+              onChange={(event) => onChange(withTrial(form, { uses: event.target.value }))}
+              aria-describedby={trialProblem ? `${id}-trial-error ${id}-trial-note` : `${id}-trial-note`}
+              aria-invalid={trialProblem ? true : undefined}
+              disabled={disabled}
+            />
+            {trialProblem && (
+              <p id={`${id}-trial-error`} role="alert" className="text-sm text-danger">
+                {trialProblem}
+              </p>
+            )}
+            <p id={`${id}-trial-note`} className="text-sm text-muted-foreground">
+              {trialNote(limits)}
+            </p>
+          </div>
+        )}
+      </div>
 
       <p className="text-xs text-muted-foreground">{PLAN_WORDS.noUnlimited}</p>
     </section>

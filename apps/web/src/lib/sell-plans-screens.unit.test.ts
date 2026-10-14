@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { PLAN_WORDS } from "./sell-plans";
+import { PLAN_WORDS, TRIAL_WORDS, trialNote } from "./sell-plans";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const source = (path: string) => readFileSync(join(here, "..", path), "utf8");
@@ -32,7 +32,7 @@ test("the block is drawn by the question, under Pay per use only, so both screen
   }
 });
 
-test("the block's words are the pure file's, and it offers no free trial", () => {
+test("the block's words are the pure file's", () => {
   // Short labels can be met in a comment; a sentence in a screen would be a second copy of it.
   for (const word of Object.values(PLAN_WORDS).filter((candidate) => candidate.includes(" "))) {
     assert.equal(BLOCK.includes(word), false, word);
@@ -42,12 +42,61 @@ test("the block's words are the pure file's, and it offers no free trial", () =>
     assert.ok(BLOCK.includes(`PLAN_WORDS.${key}`), key);
   }
   for (const screen of [BLOCK, QUESTION, SELL_TAB, WIZARD]) {
-    assert.equal(/free trial/i.test(screen), false);
     assert.equal(/unlimited/i.test(screen.replace(/PLAN_WORDS\.noUnlimited/g, "")), false);
   }
   // Ending a plan asks in the app's own dialog.
   assert.match(BLOCK, /useConfirm/);
   assert.match(BLOCK, /endPlanDialog\(row, saved\)/);
+});
+
+test("the free trial is one switch and one box in the block, and no screen says a word of it itself", () => {
+  // Every word is the pure file's: the switch, the box, the note with its number of days, the dialog.
+  for (const key of ["offer", "uses"]) assert.ok(BLOCK.includes(`TRIAL_WORDS.${key}`), key);
+  assert.match(BLOCK, /\{trialNote\(limits\)\}/);
+  for (const word of [...Object.values(TRIAL_WORDS), trialNote(), "Nothing is charged", "on the free trial"]) {
+    for (const screen of [BLOCK, QUESTION, SELL_TAB, WIZARD]) assert.equal(screen.includes(word), false, word);
+  }
+  // Outside the block no screen knows of it: it goes with the plans, in their form, their save and their errors.
+  for (const screen of [QUESTION, SELL_TAB, WIZARD]) {
+    assert.equal(/free trial/i.test(screen), false);
+    assert.equal(/withTrial|trialFormOf|checkTrial|TRIAL_WORDS/.test(screen), false);
+  }
+  // The "Try it" messages of a listing's page are another thing, set elsewhere: the block does not touch them.
+  assert.equal(/trialApi|fundedDailyCap|Try it/.test(BLOCK), false);
+
+  // One switch, drawn from the form, under the rows and above the block's last line.
+  assert.equal(BLOCK.split("<Switch").length, 2);
+  assert.match(BLOCK, /<Switch id=\{`\$\{id\}-trial`\} checked=\{trial\.on\} onCheckedChange=\{\(on\) => void switchTrial\(on\)\}/);
+  assert.match(BLOCK, /const trial = trialFormOf\(form\);/);
+  assert.ok(BLOCK.indexOf("<Switch") > BLOCK.indexOf("{PLAN_WORDS.add}"));
+  assert.ok(BLOCK.indexOf("<Switch") < BLOCK.indexOf("{PLAN_WORDS.noUnlimited}"));
+  // The box, its sentence and the note are there only while the switch is on.
+  const on = BLOCK.indexOf("{trial.on && (");
+  assert.ok(on > BLOCK.indexOf("<Switch"));
+  for (const part of ["{TRIAL_WORDS.uses}", "{trialProblem}", "{trialNote(limits)}"]) assert.ok(BLOCK.indexOf(part) > on, part);
+  assert.match(BLOCK, /value=\{trial\.uses\}/);
+  assert.match(BLOCK, /onChange=\{\(event\) => onChange\(withTrial\(form, \{ uses: event\.target\.value \}\)\)\}/);
+  // Switched off and not yet saved: said once, in the trial's own box under its switch, not among the plans' lines.
+  assert.match(BLOCK, /const trialEnding = trialEndingLine\(form, saved\);/);
+  assert.match(BLOCK, /\{trialEnding && \(\s+<p role="status"[^>]*>\s+\{trialEnding\}/);
+  assert.equal(BLOCK.split("{trialEnding}").length, 2);
+  assert.ok(BLOCK.indexOf("{trialEnding}") > BLOCK.indexOf("<Switch"));
+  assert.ok(BLOCK.indexOf("{trialEnding}") < on);
+  // What is wrong with it, found here or said by the API, is under its own box.
+  assert.match(BLOCK, /const trialProblem = trialProblemOf\(form, errors\);/);
+  assert.match(BLOCK, /\{trialProblem && \(\s+<p id=\{`\$\{id\}-trial-error`\} role="alert"/);
+
+  // Switching it off while people are on it asks first, in the app's own dialog; switching it on never asks.
+  assert.match(
+    BLOCK,
+    /async function switchTrial\(on: boolean\) \{[^}]*const dialog = on \? null : endTrialDialog\(form, saved, limits\);\s+if \(dialog && !\(await confirm\(\{ \.\.\.dialog, destructive: true \}\)\)\) return;\s+onChange\(withTrial\(form, \{ on \}\)\);/,
+  );
+  assert.equal(BLOCK.split("withTrial(form, { on })").length, 2);
+
+  // The on-sale line is one of the plan lines, with the number of days the capabilities give.
+  assert.match(SELL_TAB, /const planLines = planSaleLines\(listing, planLimits\);/);
+  // Moving away from Pay per use says what the people on the trial keep, with the same number of days.
+  assert.match(QUESTION, /plansKeptLine\(listing \? \{ \.\.\.listing, plans: plans\.saved \} : null, form, plans\.limits\)/);
 });
 
 test("both screens check the plans first, save the listing, then send the whole set once", () => {
@@ -104,7 +153,7 @@ test("a save ends only a plan the rows were made from, never one that a later re
 });
 
 test("the Sell tab shows a line for each plan of a listing on sale, from the creator's own listing", () => {
-  assert.match(SELL_TAB, /planSaleLines\(listing\)/);
+  assert.match(SELL_TAB, /planSaleLines\(listing, planLimits\)/);
   assert.match(SELL_TAB, /savedPlansOf\(listing\)/);
   // A refused save of plans keeps the rows as they were typed.
   assert.match(SELL_TAB, /await load\(plansProblem !== null\)/);

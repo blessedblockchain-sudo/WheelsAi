@@ -86,7 +86,7 @@ async function toView(row: OfferingRow | null): Promise<OfferingView | null> {
 }
 
 /** Whether any of these agents is a buyer's copy of a marketplace listing. */
-async function anyMarketplaceCopy(agentIds: string[]): Promise<boolean> {
+export async function anyMarketplaceCopy(agentIds: string[]): Promise<boolean> {
   if (agentIds.length === 0) return false;
   // Any install row, whatever its status: an uninstalled copy is still
   // somebody else's agent.

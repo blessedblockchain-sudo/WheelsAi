@@ -20,6 +20,7 @@ import {
   MIN_PLAN_PRICE_CENTS,
   TRIAL_DAYS,
 } from "../services/listingPlans.js";
+import { PAID_WORKFLOW_MAX_RUN_MS } from "../services/workflowListing.js";
 import { installTestAuth } from "./jobsApiFakes.js";
 
 // GET /api/capabilities: each answer follows the thing that decides it, a
@@ -111,6 +112,7 @@ test("with nothing switched on, nothing is available and the shape is still whol
       minExtraUsePriceCents: 5,
       maxTrialUses: 50,
       trialDays: 7,
+      paidWorkflowMaxRunMs: 600_000,
       freeModelDailyAllowance: null,
     },
   });
@@ -243,6 +245,7 @@ test("the body names no key, setting, address or reason, whatever is on or off",
       "minExtraUsePriceCents",
       "maxTrialUses",
       "trialDays",
+      "paidWorkflowMaxRunMs",
       "freeModelDailyAllowance",
     ]);
     assert.deepEqual(Object.keys(json.chat), ["models", "defaultModel"]);
@@ -317,6 +320,8 @@ test("paidUse carries the buyer's limits, the smallest price of a use, and the c
     // The numbers of a free trial, from the same rules.
     maxTrialUses: MAX_TRIAL_USES,
     trialDays: TRIAL_DAYS,
+    // How long a paid run of a workflow may last, from the one constant.
+    paidWorkflowMaxRunMs: PAID_WORKFLOW_MAX_RUN_MS,
     freeModelDailyAllowance: 200,
   });
   assert.deepEqual(
@@ -325,6 +330,8 @@ test("paidUse carries the buyer's limits, the smallest price of a use, and the c
   );
   // The caller's organization, never one named in the request.
   assert.deepEqual(asked, ["org_1"]);
+  // The number a Sell screen says as "A paid run is stopped after 10 minutes.", and the one a paid run is held to.
+  assert.equal(PAID_WORKFLOW_MAX_RUN_MS, 10 * 60_000);
 
   // A plan with a multiple, as the chat core's own check multiplies it.
   world.multiplier = async () => 5;
@@ -351,6 +358,7 @@ test("paidUse fails closed on the allowance alone: an unreadable or senseless nu
     minExtraUsePriceCents: 5,
     maxTrialUses: 50,
     trialDays: 7,
+    paidWorkflowMaxRunMs: 600_000,
   };
   const boom = async () => {
     throw new Error("down");

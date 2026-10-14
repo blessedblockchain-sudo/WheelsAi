@@ -19,9 +19,10 @@
  *                  many a listing can have, the most uses one can include,
  *                  its smallest price and the smallest price of an extra
  *                  use), the numbers of a free trial (the most uses it can
- *                  include and how many days it lasts), and how many answers
- *                  a day the caller's own organization gets on the
- *                  platform's models (null when that cannot be read)
+ *                  include and how many days it lasts), how long a paid run
+ *                  of a workflow may last, and how many answers a day the
+ *                  caller's own organization gets on the platform's models
+ *                  (null when that cannot be read)
  *
  * It says WHAT is available and never why: no key names, setting names,
  * addresses or reasons. The body is built field by field from the answers
@@ -45,6 +46,7 @@ import {
 } from "../services/listingPlans.js";
 import { PAID_USE_PER_BUYER_PER_DAY, PAID_USE_PER_BUYER_PER_MINUTE } from "../services/publicPageState.js";
 import { MIN_PRICE_PER_USE_CENTS } from "../services/useListing.js";
+import { PAID_WORKFLOW_MAX_RUN_MS } from "../services/workflowListing.js";
 
 // ============================================
 // Types
@@ -90,6 +92,8 @@ export interface PaidUseCapability {
   maxTrialUses: number;
   /** How many days a free trial lasts. */
   trialDays: number;
+  /** The longest a paid run of a workflow on sale may take, in milliseconds: it is stopped after this. */
+  paidWorkflowMaxRunMs: number;
   /** The caller's organization, on its plan; null when it cannot be read. */
   freeModelDailyAllowance: number | null;
 }
@@ -187,6 +191,7 @@ export async function readPaidUse(reads: PaidUseReads, orgId: string): Promise<P
     minExtraUsePriceCents: Number(MIN_EXTRA_USE_PRICE_CENTS),
     maxTrialUses: MAX_TRIAL_USES,
     trialDays: TRIAL_DAYS,
+    paidWorkflowMaxRunMs: PAID_WORKFLOW_MAX_RUN_MS,
     freeModelDailyAllowance: allowance,
   };
 }

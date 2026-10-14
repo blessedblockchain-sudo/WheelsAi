@@ -1411,6 +1411,10 @@ export async function updateListing(
   // at a price in what this edit does not write itself: an edit that moved
   // it away since the read above has turned the switch off, and this write
   // then finds no row and is refused in the sentence, not by the CHECK.
+  // Prisma sends it as one statement, UPDATE ... WHERE id AND sells AND
+  // pricing_model AND price_per_request_cents >= 5 RETURNING (read on a real
+  // database, 2026-10-14), so no other edit can come between the guard and
+  // the write.
   const x402OnGuard =
     params.x402Enabled === true
       ? {

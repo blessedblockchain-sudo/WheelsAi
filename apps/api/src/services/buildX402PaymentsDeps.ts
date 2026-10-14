@@ -268,7 +268,9 @@ export function getX402Payments(): X402PaymentsApi {
  * failure: "duplicate" for the message hash (this payment was presented
  * before), "wallet_busy" for the one-open index (a payment of this wallet is
  * held or submitted), "unknown" for a unique violation that does not say,
- * null for anything else (thrown on).
+ * null for anything else (thrown on). Read on a real database (Prisma 5.22
+ * on Postgres, 2026-10-14): meta.target is ["message_hash"] for the hash and
+ * ["payer_address"] for the partial index of one open payment per wallet.
  */
 export function doorClaimConflict(err: unknown): "duplicate" | "wallet_busy" | "unknown" | null {
   if (!isUniqueViolation(err)) return null;

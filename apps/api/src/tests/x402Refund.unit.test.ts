@@ -263,3 +263,32 @@ test("a database error is thrown with nothing written", async () => {
   assert.equal(db.balances.get("org-1"), undefined);
   assert.equal(db.ledger.length, 0);
 });
+
+test("a payment at a listing's x402 door is never returned: refused before anything is written, whatever its status", async () => {
+  // Its row names the SELLER's organization: a return would put a stranger's
+  // payment into the seller's credits.
+  const db = new FakeX402Db();
+  for (const status of ["submitted", "verified"] as const) {
+    const door = landed(db, {
+      orgId: "seller-org",
+      deploymentId: null,
+      listingId: "listing-1",
+      messageHash: `${status}-hash`,
+      payerAddress: `door-payer-${status}`,
+      status,
+      amountReceivedRaw: "50000",
+    });
+    db.writes.length = 0;
+    assert.deepEqual(await give(db, door.id, ["submitted", "verified"]), { returned: false, reason: "not_refundable" });
+    assert.deepEqual(db.writes, [], "nothing was written: not even the carry");
+    assert.equal(db.payments.get(door.id)!.status, status);
+    assert.equal(db.payments.get(door.id)!.refundedAt, null);
+  }
+  assert.equal(db.balances.size, 0);
+  assert.equal(db.ledger.length, 0);
+
+  // A deployment's payment beside it is returned as before.
+  const own = landed(db, { amountReceivedRaw: "20000" });
+  assert.equal((await give(db, own.id)).returned, true);
+  assert.equal(db.ledger.length, 1);
+});

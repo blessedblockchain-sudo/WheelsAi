@@ -20,6 +20,10 @@
  *   USDC  the base units, which are micro-dollars;
  *   SOL   the lamports at the rate on the payment's row, rounded down.
  *
+ * A payment at a listing's x402 door is never returned: its payer has no
+ * account, and its row names the SELLER's organization, whose credits it
+ * would land in. Such a row is refused before anything is written.
+ *
  * Whole numbers only. Pure: the database is an argument.
  */
 
@@ -41,6 +45,8 @@ export type X402RefundableStatus = "submitted" | "verified";
 export interface X402RefundPaymentRow {
   id: string;
   orgId: string;
+  /** Set on a payment at a listing's door, which is never returned. */
+  listingId: string | null;
   asset: string;
   amountReceivedRaw: string | null;
   solMicroUsdPerSol: bigint | null;
@@ -53,6 +59,7 @@ export interface X402RefundTx {
       select: {
         id: true;
         orgId: true;
+        listingId: true;
         asset: true;
         amountReceivedRaw: true;
         solMicroUsdPerSol: true;
@@ -132,7 +139,9 @@ export type X402RefundResult =
         /** The row does not say what was sent. Nothing is guessed. */
         | "no_amount"
         /** Already served, already returned, or not in a status to return from. */
-        | "already_ended";
+        | "already_ended"
+        /** A payment at a listing's door: never returned as credits. */
+        | "not_refundable";
     };
 
 const WHOLE_NUMBER = /^[0-9]{1,30}$/;
@@ -177,12 +186,17 @@ export async function returnX402Payment(
         select: {
           id: true,
           orgId: true,
+          listingId: true,
           asset: true,
           amountReceivedRaw: true,
           solMicroUsdPerSol: true,
         },
       });
       if (!row) return { returned: false, reason: "not_found" };
+      // Before any write: the carry is the first one. (!= on purpose: the
+      // column is selected, so only a row from before the door reads it
+      // as anything but a string or null.)
+      if (row.listingId != null) return { returned: false, reason: "not_refundable" };
       const refundMicroUsd = x402RefundMicroUsd(row);
       if (refundMicroUsd === null) return { returned: false, reason: "no_amount" };
 

@@ -6,10 +6,17 @@ import { env } from "../config/env.js";
 import { ensureSolanaCluster, getSolanaConnection } from "../lib/solana.js";
 import { createLogger } from "../utils/logger.js";
 import { buildSignatureFateDeps } from "./buildSignatureFateDeps.js";
-import { X402_FAILED_ON_CHAIN_REASON, readX402Fate } from "./buildX402PaymentsDeps.js";
+import {
+  X402_FAILED_ON_CHAIN_REASON,
+  X402_NEVER_LANDED_REASON,
+  markDoorHeldFailed,
+  markDoorUnserved,
+  readX402Fate,
+} from "./buildX402PaymentsDeps.js";
 import { signatureFate } from "./signatureFate.js";
 import { x402NetworkFor } from "./x402.js";
 import {
+  isDoorRow,
   settleX402Row,
   type X402SettleOutcome,
   type X402SettlementDeps,
@@ -19,8 +26,8 @@ import { returnX402Payment, type X402RefundDb } from "./x402Refund.js";
 
 const logger = createLogger("x402-settlement-worker");
 
-/** What a payment that can never land says on its row. Our own words. */
-export const X402_NEVER_LANDED_REASON = "The payment never reached the chain. Nothing was taken.";
+// Written beside the request's own reasons; named here too, where it always was.
+export { X402_NEVER_LANDED_REASON };
 
 let isTickRunning = false;
 // Where the next run starts in the list of open rows. A row the chain has
@@ -184,18 +191,27 @@ export function evaluateX402Alerts(
 
 const NOT_LANDED_STATUSES = ["submitted", "pending"] as const;
 
+/**
+ * An organization's OWN payments: those its deployments took. A payment at
+ * its agent's x402 door names it as orgId, but was made by a stranger's
+ * wallet: its payer and its failures are not the organization's to count or
+ * to be alerted about (a creator sees door sales on the earnings page).
+ */
+const OWN_PAYMENTS = { listingId: null } as const;
+
 export async function getX402OrgPaymentSummary(
   orgId: string
 ): Promise<X402OrgPaymentSummary> {
+  const own = { orgId, ...OWN_PAYMENTS };
   const [total, pending, verified, settled, failed, oldestPending] = await Promise.all([
-    prisma.x402Payment.count({ where: { orgId } }),
+    prisma.x402Payment.count({ where: own }),
     // Not yet known to have landed: "submitted" (and "pending" on old rows).
-    prisma.x402Payment.count({ where: { orgId, status: { in: [...NOT_LANDED_STATUSES] } } }),
-    prisma.x402Payment.count({ where: { orgId, status: "verified" } }),
-    prisma.x402Payment.count({ where: { orgId, status: "settled" } }),
-    prisma.x402Payment.count({ where: { orgId, status: "failed" } }),
+    prisma.x402Payment.count({ where: { ...own, status: { in: [...NOT_LANDED_STATUSES] } } }),
+    prisma.x402Payment.count({ where: { ...own, status: "verified" } }),
+    prisma.x402Payment.count({ where: { ...own, status: "settled" } }),
+    prisma.x402Payment.count({ where: { ...own, status: "failed" } }),
     prisma.x402Payment.findFirst({
-      where: { orgId, status: { in: [...NOT_LANDED_STATUSES] } },
+      where: { ...own, status: { in: [...NOT_LANDED_STATUSES] } },
       orderBy: { createdAt: "asc" },
       select: { createdAt: true },
     }),
@@ -281,8 +297,10 @@ export async function persistX402SettlementSnapshot(
 export async function persistAllX402SettlementSnapshots(): Promise<
   X402SettlementSnapshotResult[]
 > {
+  // Only organizations with payments of their own get a snapshot, and so alerts.
   const organizations = await prisma.x402Payment.groupBy({
     by: ["orgId"],
+    where: OWN_PAYMENTS,
   });
 
   if (organizations.length === 0) {
@@ -326,12 +344,13 @@ export async function runX402SettlementTick(): Promise<void> {
 
   try {
     // Rows of THIS chain that are not finished: sent and not yet known to
-    // have landed, or landed and not yet final. No count of attempts ends a
-    // row; only the chain does.
+    // have landed, or landed and not yet final, and door payments still held
+    // by a request that may have died. No count of attempts ends a row; only
+    // the chain, or a door row's age, does.
     const batchSize = env.X402_SETTLEMENT_BATCH_SIZE;
     const payments: X402SettlementRow[] = await prisma.x402Payment.findMany({
       where: {
-        status: { in: ["submitted", "verified"] },
+        status: { in: ["submitted", "verified", "held"] },
         network: x402NetworkFor(env.SOLANA_NETWORK),
       },
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
@@ -341,23 +360,39 @@ export async function runX402SettlementTick(): Promise<void> {
     });
 
     const deps = buildX402SettlementDeps();
+    let processed = 0;
     let settled = 0;
     let failed = 0;
     let returned = 0;
     let retried = 0;
     let skipped = 0;
+    // A door payment is a stranger's, made at a listing: the worker's own
+    // numbers, which every organization's x402 metrics show, leave it out as
+    // they did before the door, and its outcomes go to the log line alone.
+    const door = { settled: 0, failed: 0, unserved: 0, waiting: 0, skipped: 0 };
+    let left = 0;
 
     for (const payment of payments) {
       const outcome = await settlePayment(payment, deps);
+      if (outcome === "waiting" || outcome === "skipped") left += 1;
+      if (isDoorRow(payment)) {
+        if (outcome === "settled") door.settled += 1;
+        if (outcome === "failed") door.failed += 1;
+        if (outcome === "unserved") door.unserved += 1;
+        if (outcome === "waiting") door.waiting += 1;
+        if (outcome === "skipped") door.skipped += 1;
+        continue;
+      }
+      processed += 1;
       if (outcome === "settled") settled += 1;
       if (outcome === "failed") failed += 1;
       if (outcome === "returned") returned += 1;
       if (outcome === "waiting") retried += 1;
       if (outcome === "skipped") skipped += 1;
     }
-    // Rows left as they were stay in the list: the next run starts after
-    // them. A short batch was the end of the list.
-    scanOffset = payments.length < batchSize ? 0 : scanOffset + retried + skipped;
+    // Rows left as they were, of either kind, stay in the list: the next run
+    // starts after them. A short batch was the end of the list.
+    scanOffset = payments.length < batchSize ? 0 : scanOffset + left;
 
     const snapshots = await persistAllX402SettlementSnapshots();
     const snapshottedOrgs = snapshots.length;
@@ -373,7 +408,7 @@ export async function runX402SettlementTick(): Promise<void> {
     }
 
     workerMetrics.ticks += 1;
-    workerMetrics.processed += payments.length;
+    workerMetrics.processed += processed;
     workerMetrics.settled += settled;
     workerMetrics.failed += failed;
     workerMetrics.returned += returned;
@@ -391,6 +426,10 @@ export async function runX402SettlementTick(): Promise<void> {
         // Payments that landed for a request that was never answered, given
         // back to the payer's credit balance.
         returned,
+        // Payments at a listing's door, apart. An unserved one landed after its
+        // request stopped waiting: kept in the treasury for the operator,
+        // nobody credited.
+        door,
         // Left for the next run: the chain had nothing final to say yet.
         waiting: retried,
         skipped,
@@ -424,6 +463,7 @@ export function getX402SettlementWorkerMetrics(): WorkerMetrics {
 
 const SETTLEMENT_ROW_SELECT = {
   id: true,
+  listingId: true,
   status: true,
   txSignature: true,
   recentBlockhash: true,
@@ -505,6 +545,22 @@ export function buildX402SettlementDeps(
     },
 
     refund: (input) => returnX402Payment(prisma as unknown as X402RefundDb, input),
+
+    markHeldFailed: markDoorHeldFailed,
+    markUnserved: markDoorUnserved,
+    logDoor: (event) => {
+      if (event.event === "unserved") {
+        logger.error(
+          { paymentId: event.paymentId, txSignature: event.signature },
+          "X402 door payment landed after its request stopped waiting: no answer was released and nobody was credited; the USDC is in the treasury for the operator",
+        );
+        return;
+      }
+      logger.error(
+        { paymentId: event.paymentId },
+        "X402 door payment is verified with no answer released; left as it is, never returned",
+      );
+    },
   };
 }
 

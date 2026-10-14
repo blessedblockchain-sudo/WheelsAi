@@ -16,9 +16,11 @@ import {
   Transaction,
 } from "@solana/web3.js";
 
+import type { EarningsRow } from "./earningsStandIn.js";
 import type { SignatureFate, SignatureConfirmationLevel } from "../services/signatureFate.js";
 import { decodeX402Payment } from "../services/x402Decode.js";
 import type {
+  X402DoorWorkerEvent,
   X402NewPayment,
   X402PaymentEvent,
   X402PaymentsDeps,
@@ -28,6 +30,7 @@ import type {
 import { microUsdToUsd, x402PriceFor } from "../services/x402Price.js";
 import { readX402Quote, signX402Quote } from "../services/x402Quote.js";
 import { returnX402Payment, type X402RefundDb, type X402RefundTx } from "../services/x402Refund.js";
+import type { X402SaleTx } from "../services/x402Sale.js";
 
 // ============================================
 // The database
@@ -37,6 +40,10 @@ export interface PaymentRow {
   id: string;
   orgId: string;
   deploymentId: string | null;
+  /** Set on a payment at a listing's door; null on a deployment's. */
+  listingId: string | null;
+  /** The door payment's one key, unique; null on a deployment's. */
+  messageHash: string | null;
   requestId: string;
   network: string;
   asset: string;
@@ -75,6 +82,32 @@ export interface LedgerRow {
   balanceAfter: bigint;
 }
 
+/** A marketplace_revenue row a door sale writes. */
+export type RevenueRow = Parameters<X402SaleTx["marketplaceRevenue"]["create"]>[0]["data"] & { id: string };
+
+/** The listing columns a door sale touches. */
+export interface SaleListingRow {
+  agentId: string | null;
+  useModelCostMicros: bigint;
+  totalRequests: bigint;
+}
+
+/** A creator's publisher profile. */
+export interface ProfileRow {
+  pendingPayoutCents: bigint;
+  totalRevenueCents: bigint;
+}
+
+/** The statuses the one-open index covers, on a payment with a listing. */
+const OPEN_DOOR_STATUSES = new Set(["held", "submitted"]);
+
+function uniqueViolation(target: string | string[]): Error {
+  return Object.assign(new Error(`Unique constraint failed on the fields: (\`${String(target)}\`)`), {
+    code: "P2002",
+    meta: { target },
+  });
+}
+
 interface Held {
   owner: object;
   released: Promise<void>;
@@ -94,6 +127,11 @@ export class FakeX402Db implements X402RefundDb {
   payments = new Map<string, PaymentRow>();
   balances = new Map<string, BalanceRow>();
   ledger: LedgerRow[] = [];
+  // A door sale's tables (services/x402Sale.ts).
+  revenues: RevenueRow[] = [];
+  listings = new Map<string, SaleListingRow>();
+  profiles = new Map<string, ProfileRow>();
+  earnings: EarningsRow[] = [];
   /** Every write, in order: "what was touched". */
   writes: string[] = [];
   private held = new Map<string, Held>();
@@ -129,6 +167,7 @@ export class FakeX402Db implements X402RefundDb {
             ? {
                 id: row.id,
                 orgId: row.orgId,
+                listingId: row.listingId,
                 asset: row.asset,
                 amountReceivedRaw: row.amountReceivedRaw,
                 solMicroUsdPerSol: row.solMicroUsdPerSol,
@@ -229,14 +268,20 @@ export class FakeX402Db implements X402RefundDb {
 
   insert(data: X402NewPayment, createdAt: Date): PaymentRow {
     for (const row of this.payments.values()) {
-      if (row.txSignature === data.txSignature) {
+      // A unique index lets any number of NULLs through.
+      if (data.txSignature !== null && row.txSignature === data.txSignature) {
         throw Object.assign(new Error("Unique constraint failed on the fields: (`tx_signature`)"), {
           code: "P2002",
         });
       }
     }
+    const listingId = data.listingId ?? null;
+    const messageHash = data.messageHash ?? null;
+    this.holdDoorUniques({ id: null, listingId, messageHash, payerAddress: data.payerAddress, status: data.status });
     const row: PaymentRow = {
       ...data,
+      listingId,
+      messageHash,
       id: `pay_${this.nextId++}`,
       settledAt: null,
       failureReason: null,
@@ -263,13 +308,191 @@ export class FakeX402Db implements X402RefundDb {
     try {
       const row = this.payments.get(id);
       if (!row || !expect(row)) return false;
-      this.payments.set(id, { ...row, ...change });
+      const next = { ...row, ...change };
+      if (change.txSignature !== undefined && change.txSignature !== null) {
+        for (const other of this.payments.values()) {
+          if (other.id !== id && other.txSignature === change.txSignature) throw uniqueViolation(["tx_signature"]);
+        }
+      }
+      this.holdDoorUniques(next);
+      this.payments.set(id, next);
       this.writes.push(`payment:${id}:${change.status ?? "served"}`);
       return true;
     } finally {
       const lock = this.held.get(`payment:${id}`);
       this.held.delete(`payment:${id}`);
       lock?.release();
+    }
+  }
+
+  /**
+   * The door's two uniques, as Postgres holds them: one row per message
+   * hash, and one held or submitted door payment per paying wallet (the
+   * partial index). A row without a listing meets neither.
+   */
+  private holdDoorUniques(row: {
+    id: string | null;
+    listingId: string | null;
+    messageHash: string | null;
+    payerAddress: string;
+    status: string;
+  }): void {
+    for (const other of this.payments.values()) {
+      if (other.id === row.id) continue;
+      if (row.messageHash !== null && other.messageHash === row.messageHash) {
+        throw uniqueViolation(["message_hash"]);
+      }
+      if (
+        row.listingId !== null &&
+        OPEN_DOOR_STATUSES.has(row.status) &&
+        other.listingId !== null &&
+        OPEN_DOOR_STATUSES.has(other.status) &&
+        other.payerAddress === row.payerAddress
+      ) {
+        throw uniqueViolation("x402_payments_one_open_door_payment_per_wallet");
+      }
+    }
+  }
+
+  /**
+   * A door sale's transaction (services/x402Sale.ts): the payment, the
+   * revenue row (unique per payment), the listing's counters, and the
+   * earnings ledger. A throw leaves nothing behind. It has no credit
+   * balance and no credit ledger: a sale from a wallet never reaches either.
+   */
+  async $saleTransaction<T>(fn: (tx: X402SaleTx) => Promise<T>): Promise<T> {
+    const owner = {};
+    const keys: string[] = [];
+    const undo: Array<() => void> = [];
+    const db = this;
+
+    const tx: X402SaleTx = {
+      x402Payment: {
+        updateMany: async ({ where, data }) => {
+          await tick();
+          await db.lock(owner, `payment:${where.id}`, keys);
+          const row = db.payments.get(where.id);
+          if (
+            !row ||
+            row.status !== where.status ||
+            row.listingId !== where.listingId ||
+            row.orgId !== where.orgId ||
+            row.payerAddress !== where.payerAddress ||
+            row.amountRaw !== where.amountRaw ||
+            row.servedAt !== null
+          ) {
+            return { count: 0 };
+          }
+          const before = { ...row };
+          undo.push(() => db.payments.set(row.id, before));
+          db.payments.set(row.id, { ...row, ...data });
+          db.writes.push(`payment:${row.id}:${data.status}`);
+          return { count: 1 };
+        },
+      },
+      marketplaceRevenue: {
+        create: async ({ data }) => {
+          await tick();
+          if (db.revenues.some((r) => r.x402PaymentId === data.x402PaymentId)) {
+            throw uniqueViolation(["x402_payment_id"]);
+          }
+          const row: RevenueRow = { ...data, id: `rev_${db.nextId++}` };
+          db.revenues.push(row);
+          undo.push(() => {
+            db.revenues.splice(db.revenues.indexOf(row), 1);
+          });
+          db.writes.push(`revenue:${row.id}`);
+          return { id: row.id };
+        },
+        update: async ({ where, data }) => {
+          await tick();
+          const row = db.revenues.find((r) => r.id === where.id);
+          if (!row) throw new Error("no revenue row");
+          const before = { ...row };
+          undo.push(() => Object.assign(row, before));
+          row.platformFeeCents += data.platformFeeCents.increment;
+          row.creatorAmountCents -= data.creatorAmountCents.decrement;
+          db.writes.push(`revenue:${row.id}:model_cost`);
+          return row;
+        },
+      },
+      agentListing: {
+        updateMany: async ({ where, data }) => {
+          await tick();
+          await db.lock(owner, `listing:${where.id}`, keys);
+          const row = db.listings.get(where.id);
+          if (!row) return { count: 0 };
+          const before = { ...row };
+          undo.push(() => db.listings.set(where.id, before));
+          if ("useModelCostMicros" in data) {
+            db.listings.set(where.id, { ...row, useModelCostMicros: row.useModelCostMicros + data.useModelCostMicros.increment });
+          } else {
+            db.listings.set(where.id, { ...row, totalRequests: row.totalRequests + data.totalRequests.increment });
+          }
+          db.writes.push(`listing:${where.id}`);
+          return { count: 1 };
+        },
+        // Answers whichever columns are asked for: the split reads agentId.
+        findUnique: (async ({ where, select }: { where: { id: string }; select: Record<string, true> }) => {
+          await tick();
+          const row = db.listings.get(where.id);
+          if (!row) return null;
+          return Object.fromEntries(Object.keys(select).map((key) => [key, row[key as keyof SaleListingRow]]));
+        }) as X402SaleTx["agentListing"]["findUnique"],
+      },
+      publisherProfile: {
+        updateMany: async ({ where, data }) => {
+          await tick();
+          await db.lock(owner, `profile:${where.orgId}`, keys);
+          const row = db.profiles.get(where.orgId);
+          if (!row) return { count: 0 };
+          if (where.pendingPayoutCents && row.pendingPayoutCents < where.pendingPayoutCents.gte) return { count: 0 };
+          const before = { ...row };
+          undo.push(() => db.profiles.set(where.orgId, before));
+          const change =
+            "increment" in data.pendingPayoutCents ? data.pendingPayoutCents.increment : -data.pendingPayoutCents.decrement;
+          db.profiles.set(where.orgId, {
+            pendingPayoutCents: row.pendingPayoutCents + change,
+            totalRevenueCents: row.totalRevenueCents + (data.totalRevenueCents?.increment ?? 0n),
+          });
+          db.writes.push(`profile:${where.orgId}`);
+          return { count: 1 };
+        },
+        findUnique: async ({ where }) => {
+          await tick();
+          const row = db.profiles.get(where.orgId);
+          return row ? { pendingPayoutCents: row.pendingPayoutCents } : null;
+        },
+      },
+      earningsTransaction: {
+        create: async ({ data }) => {
+          await tick();
+          const row = { ...data };
+          db.earnings.push(row);
+          undo.push(() => {
+            db.earnings.splice(db.earnings.indexOf(row), 1);
+          });
+          db.writes.push(`earnings:${data.orgId}:${data.type}`);
+          return row;
+        },
+      },
+    };
+
+    const end = () => {
+      for (const key of keys) {
+        const lock = this.held.get(key);
+        this.held.delete(key);
+        lock?.release();
+      }
+    };
+    try {
+      const result = await fn(tx);
+      end();
+      return result;
+    } catch (err) {
+      for (const step of undo.reverse()) step();
+      end();
+      throw err;
     }
   }
 
@@ -319,6 +542,10 @@ export interface World {
   broadcastThrows: boolean;
   /** Called between the row being written and the next step, to stage a race. */
   onFateRead: (() => Promise<void>) | null;
+  /** What the worker told the operator about door payments. */
+  doorWorkerEvents: X402DoorWorkerEvent[];
+  /** Times the worker returned a payment as credits. */
+  refunds: number;
 }
 
 export function makeWorld(over: Partial<X402Settings> = {}): World {
@@ -350,6 +577,8 @@ export function makeWorld(over: Partial<X402Settings> = {}): World {
     fates: ["landed_ok"],
     broadcastThrows: false,
     onFateRead: null,
+    doorWorkerEvents: [],
+    refunds: 0,
     deps: undefined as unknown as X402PaymentsDeps,
     settlementDeps: undefined as unknown as X402SettlementDeps,
   };
@@ -364,7 +593,10 @@ export function makeWorld(over: Partial<X402Settings> = {}): World {
       ? { fate: next, confirmationStatus: next.startsWith("landed") ? ("confirmed" as const) : null }
       : next;
   };
-  const refund: X402PaymentsDeps["refund"] = (input) => returnX402Payment(db, input);
+  const refund: X402PaymentsDeps["refund"] = (input) => {
+    world.refunds += 1;
+    return returnX402Payment(db, input);
+  };
 
   world.deps = {
     settings: () => world.settings,
@@ -455,6 +687,13 @@ export function makeWorld(over: Partial<X402Settings> = {}): World {
     markFailed: (id, why) =>
       db.cas(id, (row) => row.status === "submitted", { status: "failed", failureReason: why }),
     refund,
+    markHeldFailed: (id, reason) =>
+      db.cas(id, (row) => row.status === "held" && row.listingId !== null, { status: "failed", failureReason: reason }),
+    markUnserved: (id) =>
+      db.cas(id, (row) => row.status === "submitted" && row.listingId !== null, { status: "unserved" }),
+    logDoor: (event) => {
+      world.doorWorkerEvents.push(event);
+    },
   };
   return world;
 }

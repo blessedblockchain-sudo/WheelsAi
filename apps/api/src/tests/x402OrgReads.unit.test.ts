@@ -208,5 +208,61 @@ test("GET /api/x402/metrics: the recent failures are the organization's own, nev
       updatedAt: OWN_FAILED.updatedAt.toISOString(),
     });
     assert.ok(!res.body.includes("never_sent"));
+
+    // The counts and the alerts are of the organization's own payments too:
+    // the door's failed and verified rows are in none of them.
+    assert.deepEqual(body.payments, {
+      total: 2,
+      pending: 0,
+      verified: 0,
+      settled: 1,
+      failed: 1,
+      retriable: 0,
+      failureRatePercent: 50,
+      oldestPendingMinutes: null,
+    });
   });
+});
+
+test("the snapshots and so the alerts are taken for organizations with payments of their own, never for door payments alone", async () => {
+  const { prisma } = await import("@wheelsai/db");
+  const { persistAllX402SettlementSnapshots } = await import("../services/x402Settlement.js");
+  const prismaAny = prisma as any;
+  const saved = { x402Payment: prismaAny.x402Payment, executeRaw: prismaAny.$executeRaw };
+  // An organization whose only rows were paid at its agent's door.
+  const DOOR_ONLY_ORG = "77777777-7777-4777-8777-777777777777";
+  const rows = [
+    ...ROWS,
+    payment({ ...DOOR_FAILED, id: "88888888-8888-4888-8888-888888888888", orgId: DOOR_ONLY_ORG, messageHash: "ef".repeat(32) }),
+  ];
+  let groupByArgs: Row | undefined;
+  const snapshotOrgs: unknown[] = [];
+  prismaAny.x402Payment = {
+    groupBy: async (args: Row) => {
+      groupByArgs = args;
+      const orgIds = new Set(rows.filter((r) => matches(r, args.where)).map((r) => r.orgId));
+      return [...orgIds].map((orgId) => ({ orgId }));
+    },
+    count: async ({ where }: Row = {}) => rows.filter((r) => matches(r, where)).length,
+    findFirst: async () => null,
+  };
+  // The snapshot's insert: its second value is the organization.
+  prismaAny.$executeRaw = async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+    snapshotOrgs.push(values[1]);
+    return 1;
+  };
+  try {
+    const snapshots = await persistAllX402SettlementSnapshots();
+    assert.deepEqual(groupByArgs, { by: ["orgId"], where: { listingId: null } });
+    assert.deepEqual(
+      snapshots.map((s) => s.orgId),
+      [ORG, OTHER_ORG],
+    );
+    assert.deepEqual(snapshotOrgs, [ORG, OTHER_ORG]);
+    assert.equal(snapshots[0]!.summary.total, 2);
+    assert.equal(snapshots[0]!.summary.verified, 0);
+  } finally {
+    prismaAny.x402Payment = saved.x402Payment;
+    prismaAny.$executeRaw = saved.executeRaw;
+  }
 });

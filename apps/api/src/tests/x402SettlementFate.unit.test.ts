@@ -11,7 +11,8 @@ import {
   markX402Served,
 } from "../services/x402Payments.js";
 import type { SignatureFate } from "../services/signatureFate.js";
-import { makeWorld, usdcPayment, type World } from "./x402StandIns.js";
+import { TREASURY, makeWorld, usdcPayment, type PaymentRow, type World } from "./x402StandIns.js";
+import { X402_DOOR_FINISH_AFTER_MS } from "../services/x402DoorRules.js";
 
 // The settlement worker finishes a payment from what the chain says and
 // nothing else. No count of attempts ends a row.
@@ -388,10 +389,13 @@ test("a run takes only open rows of this chain, with no count of attempts, and e
     await runX402SettlementTick();
     const after = getX402SettlementWorkerMetrics();
 
+    // Door payments still held by a request are open rows too (slice 6);
+    // every row comes with its listing, which alone picks the door's branches.
     assert.deepEqual(findManyArgs.where, {
-      status: { in: ["submitted", "verified"] },
+      status: { in: ["submitted", "verified", "held"] },
       network: "solana:devnet",
     });
+    assert.equal(findManyArgs.select.listingId, true);
     assert.equal(JSON.stringify(findManyArgs).includes("retryCount"), false);
 
     assert.equal(after.settled - before.settled, 1);
@@ -432,4 +436,240 @@ test("a run takes only open rows of this chain, with no count of attempts, and e
     (env as any).X402_SUBMIT_TRANSACTIONS = saved.submit;
     (env as any).X402_ALERT_WEBHOOK_URL = saved.webhook;
   }
+});
+
+test("a door payment the run finishes is not counted in the worker's own numbers, which every organization sees", async () => {
+  const [{ runX402SettlementTick, getX402SettlementWorkerMetrics }, { env }, { prisma }] = await Promise.all([
+    import("../services/x402Settlement.js"),
+    import("../config/env.js"),
+    import("@wheelsai/db"),
+  ]);
+  const prismaAny = prisma as any;
+  const saved = {
+    x402Payment: prismaAny.x402Payment,
+    executeRaw: prismaAny.$executeRaw,
+    submit: (env as any).X402_SUBMIT_TRANSACTIONS,
+    webhook: (env as any).X402_ALERT_WEBHOOK_URL,
+  };
+  (env as any).X402_SUBMIT_TRANSACTIONS = false;
+  (env as any).X402_ALERT_WEBHOOK_URL = undefined;
+
+  const now = Date.now();
+  const base = { recentBlockhash: "hash", refundedAt: null, submittedAt: null, verifiedAt: null, servedAt: null };
+  const rows = [
+    // A deployment's payment, served: settled, and counted.
+    {
+      ...base,
+      id: "own",
+      status: "verified",
+      listingId: null,
+      txSignature: "sig_own",
+      servedAt: new Date(now),
+      verifiedAt: new Date(now),
+      createdAt: new Date(now),
+    },
+    // A stranger's door payment still held six minutes on: the run fails it,
+    // and it is nobody's own number.
+    { ...base, id: "door", status: "held", listingId: "listing-1", txSignature: null, createdAt: new Date(now - 6 * MINUTE) },
+  ];
+  const updates: Array<{ where: any; data: any }> = [];
+  prismaAny.x402Payment = {
+    findMany: async () => rows,
+    updateMany: async ({ where, data }: any) => {
+      updates.push({ where, data });
+      return { count: 1 };
+    },
+    groupBy: async () => [],
+    count: async () => 0,
+    findFirst: async () => null,
+  };
+  prismaAny.$executeRaw = async () => 0;
+
+  try {
+    const before = getX402SettlementWorkerMetrics();
+    await runX402SettlementTick();
+    const after = getX402SettlementWorkerMetrics();
+
+    // The door row was finished...
+    assert.ok(updates.some((u) => u.where.id === "door" && u.data.status === "failed"));
+    // ...and only the deployment's payment is in the worker's numbers.
+    assert.equal(after.processed - before.processed, 1);
+    assert.equal(after.settled - before.settled, 1);
+    assert.equal(after.failed - before.failed, 0);
+    assert.equal(after.retried - before.retried, 0);
+  } finally {
+    prismaAny.x402Payment = saved.x402Payment;
+    prismaAny.$executeRaw = saved.executeRaw;
+    (env as any).X402_SUBMIT_TRANSACTIONS = saved.submit;
+    (env as any).X402_ALERT_WEBHOOK_URL = saved.webhook;
+  }
+});
+
+// ============================================
+// A payment at a listing's x402 door
+// ============================================
+//
+// The worker finishes what a door request left, and only once the row is
+// five minutes old. It never sends, and it never returns a door payment as
+// credits: the payer has no account, and the row names the seller.
+
+let doorRows = 0;
+
+/** A door payment's row as the request left it, written now. */
+function doorRow(world: World, status: "held" | "submitted" | "verified", served = false): PaymentRow {
+  doorRows += 1;
+  const sent = status !== "held";
+  const row = world.db.insert(
+    {
+      orgId: "seller-org",
+      deploymentId: null,
+      listingId: "listing-1",
+      messageHash: `${doorRows}`.padStart(64, "a"),
+      requestId: `nonce-${doorRows}`,
+      network: "solana:devnet",
+      asset: "USDC",
+      amountRaw: "50000",
+      amountUsd: 0.05,
+      payerAddress: `payer-${doorRows}`,
+      payeeAddress: TREASURY,
+      txSignature: sent ? `door-sig-${doorRows}` : null,
+      status,
+      signedTxB64: sent ? "AAEC" : null,
+      recentBlockhash: "door-hash",
+      amountReceivedRaw: status === "verified" ? "50000" : null,
+      amountMicroUsd: 50_000n,
+      solMicroUsdPerSol: null,
+      submittedAt: sent ? new Date(world.nowMs) : null,
+      verifiedAt: status === "verified" ? new Date(world.nowMs) : null,
+    },
+    new Date(world.nowMs),
+  );
+  if (served) world.db.payments.set(row.id, { ...row, servedAt: new Date(world.nowMs) });
+  world.db.writes.length = 0;
+  return world.db.payments.get(row.id)!;
+}
+
+const runRow = (world: World, id: string) => settleX402Row(world.db.payments.get(id)!, world.settlementDeps);
+
+test("the door's numbers: the worker waits longer than any request can", () => {
+  assert.equal(X402_DOOR_FINISH_AFTER_MS, 5 * MINUTE);
+});
+
+test("a held door payment: left while young, failed once five minutes old, and the chain is never asked", async () => {
+  const world = makeWorld();
+  const row = doorRow(world, "held");
+
+  world.nowMs += 4 * MINUTE;
+  assert.equal(await runRow(world, row.id), "waiting");
+  assert.equal(world.db.payments.get(row.id)!.status, "held");
+  assert.deepEqual(world.db.writes, []);
+
+  world.nowMs += 2 * MINUTE;
+  assert.equal(await runRow(world, row.id), "failed");
+  const after = world.db.payments.get(row.id)!;
+  assert.equal(after.status, "failed");
+  assert.equal(after.failureReason, "never_sent");
+  assert.equal(after.txSignature, null);
+  assert.equal(world.fateReads, 0, "nothing was ever sent, so nothing is read");
+  assert.equal(world.clusterChecks, 0);
+  assert.equal(world.refunds, 0);
+  assert.equal(await runRow(world, row.id), "skipped");
+});
+
+test("a submitted door payment that landed after its request stopped waiting is unserved: never returned, nobody credited", async () => {
+  const world = makeWorld();
+  const row = doorRow(world, "submitted");
+  world.fates = ["landed_ok"];
+
+  // Its request may still be waiting: not even the chain is asked.
+  world.nowMs += 4 * MINUTE;
+  assert.equal(await runRow(world, row.id), "waiting");
+  assert.equal(world.fateReads, 0);
+
+  world.nowMs += 2 * MINUTE;
+  assert.equal(await runRow(world, row.id), "unserved");
+  const after = world.db.payments.get(row.id)!;
+  assert.equal(after.status, "unserved");
+  assert.equal(after.refundedAt, null);
+  assert.equal(world.refunds, 0, "the refund is never called for a door payment");
+  assert.equal(world.db.balances.size, 0, "no credit moved");
+  assert.deepEqual(world.db.ledger, []);
+  assert.deepEqual(world.doorWorkerEvents, [{ event: "unserved", paymentId: row.id, signature: row.txSignature }]);
+
+  // And it stays so, however often the worker comes back.
+  assert.equal(await runRow(world, row.id), "skipped");
+  assert.equal(world.refunds, 0);
+});
+
+test("a submitted door payment the chain refused, or that can never land, is failed with nothing taken", async () => {
+  for (const fate of ["landed_failed", "dead"] as SignatureFate[]) {
+    const world = makeWorld();
+    const row = doorRow(world, "submitted");
+    world.fates = [fate];
+    world.nowMs += 6 * MINUTE;
+    assert.equal(await runRow(world, row.id), "failed", fate);
+    const after = world.db.payments.get(row.id)!;
+    assert.equal(after.status, "failed", fate);
+    assert.equal(after.failureReason, fate === "dead" ? "never_landed" : "failed_on_chain");
+    assert.equal(world.refunds, 0);
+    assert.equal(world.db.balances.size, 0);
+  }
+});
+
+test("a submitted door payment the chain says nothing final about is left, and never returned", async () => {
+  for (const fate of ["unknown", "in_flight"] as SignatureFate[]) {
+    const world = makeWorld();
+    const row = doorRow(world, "submitted");
+    world.fates = [fate];
+    for (let i = 0; i < 20; i += 1) {
+      world.nowMs += 10 * MINUTE;
+      assert.equal(await runRow(world, row.id), "waiting", fate);
+    }
+    assert.equal(world.db.payments.get(row.id)!.status, "submitted");
+    assert.deepEqual(world.db.writes, []);
+    assert.equal(world.refunds, 0);
+  }
+});
+
+test("a verified and served door payment settles once finalized, as a deployment's does", async () => {
+  const world = makeWorld();
+  const row = doorRow(world, "verified", true);
+
+  world.fates = [{ fate: "landed_ok", confirmationStatus: "confirmed" }];
+  assert.equal(await runRow(world, row.id), "waiting");
+  assert.equal(world.db.payments.get(row.id)!.status, "verified");
+
+  world.fates = [{ fate: "landed_ok", confirmationStatus: "finalized" }];
+  assert.equal(await runRow(world, row.id), "settled");
+  assert.equal(world.db.payments.get(row.id)!.status, "settled");
+  assert.equal(world.refunds, 0);
+});
+
+test("a verified door payment with no answer released is logged and left, never returned however old", async () => {
+  const world = makeWorld();
+  const row = doorRow(world, "verified");
+  world.fates = ["landed_ok"];
+  for (let i = 0; i < 5; i += 1) {
+    world.nowMs += 60 * MINUTE;
+    assert.equal(await runRow(world, row.id), "waiting");
+  }
+  assert.equal(world.db.payments.get(row.id)!.status, "verified");
+  assert.equal(world.refunds, 0);
+  assert.equal(world.db.balances.size, 0);
+  assert.deepEqual(world.db.writes, []);
+  assert.equal(world.doorWorkerEvents.length, 5);
+  assert.deepEqual(world.doorWorkerEvents[0], { event: "verified_not_served", paymentId: row.id });
+});
+
+test("a deployment's payment beside door payments takes exactly its own branch", async () => {
+  const world = makeWorld();
+  const id = await submitted(world);
+  const door = doorRow(world, "submitted");
+  world.nowMs += 6 * MINUTE;
+  world.fates = ["landed_ok"];
+  assert.equal(await runRow(world, id), "returned", "the deployment's payment goes back as credits, as before");
+  assert.equal(await runRow(world, door.id), "unserved", "the door's does not");
+  assert.equal(world.refunds, 1);
+  assert.equal(world.db.ledger.length, 1);
+  assert.equal(world.db.ledger[0]!.referenceId, id);
 });

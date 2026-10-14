@@ -319,7 +319,11 @@ test("where x402 is required, a per-request deployment is refused by name, unpai
   const { deps, world } = harness({ deployment: PER_REQUEST, x402Required: () => true });
   const err = await refusal(runDeploymentChat(request(), deps));
   assert.equal(err.code, "x402_required");
-  assert.match(err.message, /accepts payment by x402 only/);
+  assert.equal(
+    err.message,
+    `the deployment "${PER_REQUEST.name}" is paid only from a Solana wallet, request by request; a workflow step has no payment to attach, so it cannot call it`,
+  );
+  assert.doesNotMatch(err.message, /x402/i);
   assert.deepEqual(world.events, []);
 
   // A GPU-billed deployment is not per-request: x402 does not apply to it.

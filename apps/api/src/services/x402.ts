@@ -125,7 +125,9 @@ export function create402Response(requirement: PaymentRequirement): {
     },
     body: {
       error: "Payment Required",
-      message: "This request requires payment via X-402 protocol",
+      // Its own wire, not the published x402 format: the public words do not call it x402.
+      message:
+        "This request needs a payment from a Solana wallet. The X-Payment-Required header says how much and where to send it.",
       payment: requirement,
     },
   };

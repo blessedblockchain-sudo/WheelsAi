@@ -184,6 +184,11 @@ test("an unpaid request is answered 402 with the USDC payment: wallet, token acc
     assert.equal(body.payment.memo, `deployment:dep-1;request:${body.requestId}`);
     assert.equal(body.reason, undefined);
     assert.equal(body.error.code, "x402_payment_required");
+    // The deployment's own wire is not the published x402 format, so its sentence does not call it x402.
+    assert.equal(
+      body.error.message,
+      "This request needs a payment from a Solana wallet. The X-Payment-Required header says how much and where to send it.",
+    );
     assert.equal(res.headers["x-request-id"], body.requestId);
     assert.equal(state.nodeCalls, 0);
     assert.equal(world.db.payments.size, 0);

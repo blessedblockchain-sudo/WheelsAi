@@ -415,6 +415,50 @@ test("what an install says of its plan: the warning, a renewal that will not com
   assert.equal(await planOf({ currentPeriodEnd: new Date(Date.now() - DAY) }, {}, { status: "retired" }), null);
 });
 
+test("an install says when what ended was the buyer's own free trial, and only then", async () => {
+  const PAST = new Date(Date.now() - DAY);
+  // The trial's row as its start writes it: a count, a price of nothing, set to end.
+  const trial = { planId: "trial", includedUses: 20, usedInPeriod: 4, priceCents: 0n, cancelAtPeriodEnd: true };
+  const rowOf = async (sub: Row | null, install: Row = {}) => {
+    const world = makeWorld({
+      listings: LISTINGS,
+      plans: PLANS,
+      installs: [installRow("alpha", install)],
+      subs: sub ? [subRow("alpha", sub)] : [],
+    });
+    const [row] = (await withWorld(world, ({ getMyInstalls }) => getMyInstalls(BUYER))) as Row[];
+    return row!;
+  };
+  const said = async (sub: Row | null, install: Row = {}) => {
+    const row = await rowOf(sub, install);
+    return [row.access, row.trialEnded];
+  };
+
+  // Its 7 days ran out, whether or not the renewal worker has closed the row.
+  assert.deepEqual(await said({ ...trial, status: "expired", currentPeriodEnd: PAST }), ["plan_ended", true]);
+  assert.deepEqual(await said({ ...trial, currentPeriodEnd: PAST }), ["plan_ended", true]);
+  // A trial that runs.
+  assert.deepEqual(await said(trial), ["subscribed", false]);
+  // A paid plan that ended: the same row with a price.
+  assert.deepEqual(await said({ ...trial, priceCents: 900n, status: "expired", currentPeriodEnd: PAST }), ["plan_ended", false]);
+  // The trial ended, and the buyer agreed to pay per use: they go on, nothing ended for them.
+  const agreed = { acceptedPricingModel: "per_request", acceptedPricePerRequestCents: 500n };
+  assert.deepEqual(await said({ ...trial, status: "expired", currentPeriodEnd: PAST }, agreed), ["listing_pricing", false]);
+  // A buyer who pays per use, with no subscription at all.
+  assert.deepEqual(await said(null, agreed), ["listing_pricing", false]);
+  // A month with no count that ran out.
+  assert.equal((await rowOf({ status: "expired", currentPeriodEnd: PAST })).trialEnded, false);
+  // A copy, even beside an ended trial row.
+  const copy = await rowOf({ ...trial, status: "expired", currentPeriodEnd: PAST }, { kind: "copy", clonedAgentId: "agent_copy" });
+  assert.equal(copy.kind, "copy");
+  assert.equal(copy.trialEnded, false);
+
+  // The word stands beside the access, and nothing else of the row moved.
+  const keys = Object.keys(await rowOf(trial));
+  assert.equal(keys[keys.indexOf("access") + 1], "trialEnded");
+  assert.equal(keys.length, 14);
+});
+
 test("a buyer's subscriptions carry the same plan, and a month has none", async () => {
   const world = makeWorld({
     listings: LISTINGS,

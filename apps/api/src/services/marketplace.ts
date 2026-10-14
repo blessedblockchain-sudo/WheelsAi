@@ -24,7 +24,7 @@ import {
   type PlanOffersDb,
   type TrialOffer,
 } from "./planOffers.js";
-import type { PlanInput } from "./listingPlans.js";
+import { onTrialPlan, type PlanInput } from "./listingPlans.js";
 import { LISTING_PAUSED_START_MESSAGE, listingPausedNow, reconcileListingPauses } from "./listingPause.js";
 import { getOrgPlan } from "./orgPlan.js";
 import { cloneAgentBehaviour, cloneAgentKind } from "./marketplaceClone.js";
@@ -2489,6 +2489,10 @@ export async function getMyInstalls(buyerId: string) {
       pricePerRequestCents: install.acceptedPricePerRequestCents,
     };
     const kind = install.kind === "use" ? ("use" as const) : ("copy" as const);
+    // The same rule billing applies (token gates aside), so the page
+    // offers only what will actually work: installAccess for a copy,
+    // useAccess for use of the creator's agent.
+    const access = licenceAccess(kind, install.status, accepted, install.listing, sub ?? null);
     return {
       id: install.id,
       listingId: install.listingId,
@@ -2502,10 +2506,11 @@ export async function getMyInstalls(buyerId: string) {
       totalRequests: Number(install.totalRequests),
       totalSpentCents: Number(install.totalSpentCents),
       installedAt: install.installedAt,
-      // The same rule billing applies (token gates aside), so the page
-      // offers only what will actually work: installAccess for a copy,
-      // useAccess for use of the creator's agent.
-      access: licenceAccess(kind, install.status, accepted, install.listing, sub ?? null),
+      access,
+      // True only when what ended was the buyer's own free trial, so the
+      // page does not call it a plan. The same expression as the access
+      // read (services/paidUse.ts). Never true for a copy.
+      trialEnded: kind === "use" && access === "plan_ended" && sub != null && onTrialPlan(sub),
       // What the buyer agreed to, next to the listing's pricing today, so
       // the page can show both when they differ.
       acceptedPricing: {

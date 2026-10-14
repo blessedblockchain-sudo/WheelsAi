@@ -2876,7 +2876,31 @@ export async function startUsing(
   return { ...(await readUseState(listing, buyerId)), created: true };
 }
 
-export async function uninstallAgent(listingId: string, buyerId: string) {
+/**
+ * What a buyer who stops using a workflow is told. A workflow is used on its
+ * page and never installed, so it gets sentences of its own; an agent's stay
+ * as they were.
+ */
+export const WORKFLOW_STOP_MESSAGES = {
+  notInUse: "You are not using this workflow right now.",
+  stopped: "You stopped using this workflow.",
+} as const;
+
+/** What a buyer who stops using an agent is told, as it always was. */
+export const AGENT_UNINSTALL_MESSAGES = {
+  notInstalled: "This agent is not currently installed",
+  uninstalled: "Agent uninstalled successfully",
+} as const;
+
+/** What POST /listings/:id/uninstall answers once use has stopped, by what the listing sells. */
+export function stoppedUsingMessage(productKind: ListingProductKind): string {
+  return productKind === "workflow" ? WORKFLOW_STOP_MESSAGES.stopped : AGENT_UNINSTALL_MESSAGES.uninstalled;
+}
+
+export async function uninstallAgent(
+  listingId: string,
+  buyerId: string,
+): Promise<{ success: true; productKind: ListingProductKind }> {
   const install = await prisma.agentInstall.findUnique({
     where: {
       listingId_buyerId: { listingId, buyerId },
@@ -2887,9 +2911,23 @@ export async function uninstallAgent(listingId: string, buyerId: string) {
     throw new Error("Installation not found");
   }
 
+  // What the listing sells decides the words, and nothing else: stopping a
+  // workflow ends its licence and its plan exactly as stopping an agent's
+  // use does. Read once; a listing never changes what it sells.
+  const sold = await prisma.agentListing.findUnique({
+    where: { id: listingId },
+    select: { agentId: true, orchestrationId: true },
+  });
+  if (!sold) {
+    throw new Error("Installation not found");
+  }
+  const productKind = listingProductKind(sold);
+  const notInUse =
+    productKind === "workflow" ? WORKFLOW_STOP_MESSAGES.notInUse : AGENT_UNINSTALL_MESSAGES.notInstalled;
+
   // A lapsed monthly install (suspended) can be removed too.
   if (install.status !== "active" && install.status !== "suspended") {
-    throw new Error("This agent is not currently installed");
+    throw new Error(notInUse);
   }
 
   // One transaction, claimed by compare-and-swap: of two concurrent
@@ -2907,7 +2945,7 @@ export async function uninstallAgent(listingId: string, buyerId: string) {
       where: { id: install.id, status: { in: ["active", "suspended"] } },
       data: { status: "uninstalled", uninstalledAt: new Date() },
     });
-    if (claimed.count !== 1) throw new Error("This agent is not currently installed");
+    if (claimed.count !== 1) throw new Error(notInUse);
     await tx.agentSubscription.updateMany({
       where: { listingId, subscriberId: buyerId, status: { in: ["active", "past_due"] } },
       data: { status: "cancelled", cancelledAt: new Date(), cancelAtPeriodEnd: false },
@@ -2936,9 +2974,9 @@ export async function uninstallAgent(listingId: string, buyerId: string) {
   // Update publisher stats
   await updatePublisherStats(listing.publisherId);
 
-  logger.info({ listingId, buyerId }, "Agent uninstalled");
+  logger.info({ listingId, buyerId, productKind }, "Agent uninstalled");
 
-  return { success: true };
+  return { success: true, productKind };
 }
 
 export async function getMyInstalls(buyerId: string) {

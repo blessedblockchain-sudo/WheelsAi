@@ -748,3 +748,35 @@ test("an agent's start is word for word what it was, and reads nothing of a work
 
   for (const w of [own, world, plan, reviewed]) assert.deepEqual(w.state.workflowReads, []);
 });
+
+// ============================================
+// Stopping
+// ============================================
+
+test("stopping use of a workflow ends its licence and its plan in the workflow's words; an agent's are word for word what they were", async () => {
+  const cases = [
+    { sells: "workflow" as const, stopped: "You stopped using this workflow.", notInUse: "You are not using this workflow right now." },
+    { sells: "agent" as const, stopped: "Agent uninstalled successfully", notInUse: "This agent is not currently installed" },
+  ];
+  for (const { sells, stopped, notInUse } of cases) {
+    const world = makeWorld({ sells, onPlan: true });
+    const res = await call(world, "uninstall", {});
+    assert.deepEqual([res.status, res.body], [200, { message: stopped }], sells);
+    // The same path for both: the licence ends now, the plan with it, and nothing is charged or refunded.
+    assert.equal(world.state.installs[0]!.status, "uninstalled", sells);
+    assert.deepEqual([world.state.subs[0]!.status, world.state.subs[0]!.cancelAtPeriodEnd], ["cancelled", false], sells);
+    assert.equal(world.state.listing.activeInstalls, 0, sells);
+    assert.equal(world.state.balance, 10_000n, sells);
+
+    // Stopping again: nothing more to stop, in the same words' twin.
+    const again = await call(world, "uninstall", {});
+    assert.deepEqual([again.status, again.body.message], [400, notInUse], sells);
+    assert.equal(world.state.listing.activeInstalls, 0, sells);
+
+    // Stopping never asks whether the workflow can run.
+    assert.deepEqual(world.state.workflowReads, [], sells);
+    if (sells === "workflow") {
+      assert.doesNotMatch(JSON.stringify([res.body, again.body]), /agent|install/i);
+    }
+  }
+});

@@ -728,7 +728,7 @@ test("once the copy is removed, a start goes through as a new agreement", async 
   const world = copyWithPaidMonth({ pricingModel: "monthly", monthlyPriceCents: 900n });
   await withWorld(world, async ({ startUsing, uninstallAgent, UseStartError }) => {
     await assert.rejects(startUsing(LISTING_ID, BUYER, { expected: monthly(900) }), UseStartError);
-    assert.deepEqual(await uninstallAgent(LISTING_ID, BUYER), { success: true });
+    assert.deepEqual(await uninstallAgent(LISTING_ID, BUYER), { success: true, productKind: "agent" });
     assert.equal(world.state.subs[0]!.status, "cancelled");
     assert.equal(world.state.balance, 10_000n, "the copy's month is not refunded");
 
@@ -851,7 +851,7 @@ test("stopping ends the licence and the subscription now, with no refund and not
   });
   world.state.listing.activeInstalls = 1;
   await withWorld(world, async ({ uninstallAgent, getMyInstalls, checkInstallStatus }) => {
-    assert.deepEqual(await uninstallAgent(LISTING_ID, BUYER), { success: true });
+    assert.deepEqual(await uninstallAgent(LISTING_ID, BUYER), { success: true, productKind: "agent" });
     // Ended: off the list, and read as no licence.
     assert.deepEqual(await getMyInstalls(BUYER), []);
     const status = await checkInstallStatus(LISTING_ID, BUYER);

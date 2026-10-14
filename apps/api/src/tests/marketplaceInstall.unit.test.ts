@@ -994,7 +994,7 @@ test("uninstalling a copy switches off every schedule of that copy in the uninst
   });
   world.state.listing.activeInstalls = 1;
   await withWorld(world, async ({ uninstallAgent }) => {
-    assert.deepEqual(await uninstallAgent(LISTING_ID, BUYER), { success: true });
+    assert.deepEqual(await uninstallAgent(LISTING_ID, BUYER), { success: true, productKind: "agent" });
   });
 
   assert.deepEqual(world.state.taskWrites, [
@@ -1030,7 +1030,7 @@ test("an uninstall of a copy with no schedule, or of an install with no copy, is
     agents: [COPY],
   });
   await withWorld(noTasks, async ({ uninstallAgent }) => {
-    assert.deepEqual(await uninstallAgent(LISTING_ID, BUYER), { success: true });
+    assert.deepEqual(await uninstallAgent(LISTING_ID, BUYER), { success: true, productKind: "agent" });
   });
   assert.equal(noTasks.state.installs[0]!.status, "uninstalled");
   assert.equal(noTasks.state.subs[0]!.status, "cancelled");
@@ -1043,7 +1043,7 @@ test("an uninstall of a copy with no schedule, or of an install with no copy, is
     tasks: [taskRow()],
   });
   await withWorld(noCopy, async ({ uninstallAgent }) => {
-    assert.deepEqual(await uninstallAgent(LISTING_ID, BUYER), { success: true });
+    assert.deepEqual(await uninstallAgent(LISTING_ID, BUYER), { success: true, productKind: "agent" });
   });
   assert.deepEqual(noCopy.state.taskWrites, []);
   assert.equal(noCopy.state.tasks[0]!.isEnabled, true);

@@ -27,6 +27,7 @@ import {
   startUsing,
   UseStartError,
   PricingChangedError,
+  stoppedUsingMessage,
   uninstallAgent,
   getMyInstalls,
   checkInstallStatus,
@@ -710,7 +711,8 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
   );
 
   /**
-   * POST /listings/:id/uninstall - Uninstall an agent
+   * POST /listings/:id/uninstall - Uninstall an agent, or stop using a
+   * workflow: the same path, each in its own words.
    */
   app.post(
     "/listings/:id/uninstall",
@@ -720,8 +722,8 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
       const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
 
       try {
-        await uninstallAgent(id, orgId);
-        return { message: "Agent uninstalled successfully" };
+        const { productKind } = await uninstallAgent(id, orgId);
+        return { message: stoppedUsingMessage(productKind) };
       } catch (error: any) {
         logger.error({ error, orgId, listingId: id }, "Failed to uninstall agent");
         return reply.badRequest(error.message);

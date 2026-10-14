@@ -11,7 +11,6 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Switch } from "@/components/ui/switch";
 import type { AgentKind } from "@/lib/api";
 import {
-  SELL_WORDS,
   asksForPayment,
   capacityLine,
   choicesOf,
@@ -19,6 +18,7 @@ import {
   copiesKeptLine,
   earningsLine,
   outboundToolsOf,
+  sellWordsOf,
   switchToCopiesLine,
   withChoice,
   withCopies,
@@ -29,6 +29,7 @@ import {
   type SellForm,
   type SellLimits,
   type SellListing,
+  type SellSubject,
 } from "@/lib/sell-choice";
 import { plansKeptLine, sellsWithPlans, type PlanErrors, type PlanLimits, type PlansForm, type SavedPlan } from "@/lib/sell-plans";
 import { cn } from "@/lib/utils";
@@ -45,9 +46,16 @@ export interface WhoCanUsePlans {
   saved: readonly SavedPlan[] | null;
 }
 
-export interface WhoCanUseProps {
-  /** The agent the question is about: its kind decides the choices, its tools the switch. */
-  agent: { agentKind: AgentKind; tools?: unknown };
+/**
+ * What the question is about. An agent (the default): its kind decides the choices, its tools the
+ * switch. A workflow: one choice, pay per run, with plans under it and no trial; it has no kind
+ * and no tools, so no agent is passed.
+ */
+type WhoCanUseSubject =
+  | { subject?: "agent"; agent: { agentKind: AgentKind; tools?: unknown } }
+  | { subject: "workflow"; agent?: undefined };
+
+export type WhoCanUseProps = WhoCanUseSubject & {
   form: SellForm;
   onChange: (form: SellForm) => void;
   /** Problems, each under the input it is about. */
@@ -66,7 +74,7 @@ export interface WhoCanUseProps {
   /** More to offer under "More options", above "Sell copies instead". */
   moreOptions?: ReactNode;
   disabled?: boolean;
-}
+};
 
 const PRICE_FIELD: Partial<Record<SellChoiceId, "perUsePrice" | "monthlyPrice">> = {
   per_use: "perUsePrice",
@@ -77,8 +85,15 @@ const PRICE_FIELD: Partial<Record<SellChoiceId, "perUsePrice" | "monthlyPrice">>
  * "Who can use it?": the one question that puts use of an agent on sale,
  * with its choices, the price, what the creator earns and what people who
  * pay get. The Sell tab and the listing wizard both show this.
+ *
+ * Asked of a workflow (`subject="workflow"`), it is the same question in a
+ * workflow's words with its one choice, and never draws what a workflow is
+ * not sold with: More options and selling copies, the copies banner, the box
+ * about tools and keeping a copy, the capacity line, or a trial of some uses
+ * at no price.
  */
 export function WhoCanUse({
+  subject = "agent",
   agent,
   form,
   onChange,
@@ -99,12 +114,16 @@ export function WhoCanUse({
   const firstChoiceRef = useRef<HTMLButtonElement>(null);
   const previousSells = useRef(form.sells);
 
-  const choices = choicesOf(form, agent.agentKind, limits);
+  const workflow = subject === "workflow";
+  const words = sellWordsOf(subject);
+  const agentKind = agent?.agentKind ?? null;
+  const choices = choicesOf(form, agentKind, limits, subject);
   const paid = asksForPayment(form);
-  const earnings = earningsLine(form, agent.agentKind, limits);
-  const capacityText = form.sells === "use" ? capacityLine(capacity) : null;
-  const hasOutboundTool = outboundToolsOf(agent.tools).length > 0;
-  const copiesKept = form.sells === "use" ? copiesKeptLine(listing) : null;
+  const earnings = earningsLine(form, agentKind, limits, subject);
+  // An agent's alone: a workflow is not answered by one agent's model, has no tools and sells no copies.
+  const capacityText = !workflow && form.sells === "use" ? capacityLine(capacity) : null;
+  const hasOutboundTool = !workflow && outboundToolsOf(agent?.tools).length > 0;
+  const copiesKept = !workflow && form.sells === "use" ? copiesKeptLine(listing) : null;
   // Plans go with "Pay per use" of the agent itself, and only once the listing's own were read.
   const plansShown = plans && plans.form.loaded && sellsWithPlans(form) ? plans : null;
   // The answer is moving away from "Pay per use": what the people on a plan keep.
@@ -119,7 +138,8 @@ export function WhoCanUse({
   }, [form.sells]);
 
   async function sellCopies() {
-    const dialog = copiesDialog(agent.agentKind);
+    if (workflow) return;
+    const dialog = copiesDialog(agentKind);
     const effect = switchToCopiesLine(listing);
     const ok = await confirm({
       title: dialog.title,
@@ -191,24 +211,24 @@ export function WhoCanUse({
     <div className="space-y-5">
       <div className="space-y-1">
         <h2 id={`${id}-question`} className="text-lg font-semibold text-foreground">
-          {SELL_WORDS.question}
+          {words.question}
         </h2>
-        {form.sells === "use" && <p className="text-sm text-muted-foreground">{SELL_WORDS.lead}</p>}
+        {form.sells === "use" && <p className="text-sm text-muted-foreground">{words.lead}</p>}
       </div>
 
-      {form.sells === "copies" && (
+      {!workflow && form.sells === "copies" && (
         <div className="flex flex-col gap-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-sm text-foreground">{SELL_WORDS.sellsCopies}</p>
+          <p className="text-sm text-foreground">{words.sellsCopies}</p>
           <Button
             ref={useInsteadRef}
             type="button"
             variant="outline"
             size="sm"
             className="shrink-0 self-start sm:self-auto"
-            onClick={() => onChange(withUse(form, agent.agentKind))}
+            onClick={() => onChange(withUse(form, agentKind))}
             disabled={disabled}
           >
-            {SELL_WORDS.sellUseInstead}
+            {words.sellUseInstead}
           </Button>
         </div>
       )}
@@ -220,7 +240,7 @@ export function WhoCanUse({
       )}
 
       <fieldset className="min-w-0" disabled={disabled}>
-        <legend className="sr-only">{SELL_WORDS.question}</legend>
+        <legend className="sr-only">{words.question}</legend>
         <RadioGroup
           value={form.choice}
           onValueChange={(value) => onChange(withChoice(form, value as SellChoiceId, choices))}
@@ -278,6 +298,7 @@ export function WhoCanUse({
                     limits={plansShown.limits}
                     saved={plansShown.saved}
                     perUsePrice={form.perUsePrice}
+                    offersTrial={!workflow}
                     disabled={disabled}
                   />
                 )}
@@ -300,21 +321,22 @@ export function WhoCanUse({
 
       {paid && (
         <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
-          <li>{SELL_WORDS.modelCost}</li>
-          <li>{SELL_WORDS.signIn}</li>
-          <li>{SELL_WORDS.priceTurnsOffFree}</li>
+          <li>{words.modelCost}</li>
+          <li>{words.signIn}</li>
+          {/* A workflow is never free, so there is no free use for a price to turn off. */}
+          {!workflow && <li>{words.priceTurnsOffFree}</li>}
         </ul>
       )}
 
       {capacityText && <p className="text-sm text-muted-foreground">{capacityText}</p>}
 
-      {paid && (
+      {!workflow && paid && (
         <div className="space-y-3 rounded-lg border p-4">
-          <p className="text-sm text-foreground">{hasOutboundTool ? SELL_WORDS.forPayers : SELL_WORDS.forPayersNoOutbound}</p>
+          <p className="text-sm text-foreground">{hasOutboundTool ? words.forPayers : words.forPayersNoOutbound}</p>
           {hasOutboundTool && (
             <div className="flex items-center justify-between gap-4">
               <Label htmlFor={`${id}-outbound`} className="text-sm font-normal text-foreground">
-                {SELL_WORDS.allowOutbound}
+                {words.allowOutbound}
               </Label>
               <Switch
                 id={`${id}-outbound`}
@@ -327,7 +349,7 @@ export function WhoCanUse({
           {keepCopy && (
             <div className="flex items-center justify-between gap-4">
               <Label htmlFor={`${id}-keep`} className="text-sm font-normal text-foreground">
-                {SELL_WORDS.keepCopy}
+                {words.keepCopy}
               </Label>
               <Switch
                 id={`${id}-keep`}
@@ -340,7 +362,7 @@ export function WhoCanUse({
         </div>
       )}
 
-      {(moreOptions || form.sells === "use") && (
+      {!workflow && (moreOptions || form.sells === "use") && (
         <div className="rounded-lg border">
           <button
             type="button"
@@ -349,7 +371,7 @@ export function WhoCanUse({
             aria-controls={`${id}-more`}
             onClick={() => setMoreOpen((open) => !open)}
           >
-            {SELL_WORDS.moreOptions}
+            {words.moreOptions}
             <ChevronDown className={cn("h-4 w-4 shrink-0 transition-transform", moreOpen && "rotate-180")} aria-hidden="true" />
           </button>
           {moreOpen && (
@@ -357,7 +379,7 @@ export function WhoCanUse({
               {moreOptions}
               {form.sells === "use" && (
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <p className="text-sm text-foreground">{SELL_WORDS.copiesInstead}</p>
+                  <p className="text-sm text-foreground">{words.copiesInstead}</p>
                   <Button
                     type="button"
                     variant="outline"
@@ -366,7 +388,7 @@ export function WhoCanUse({
                     onClick={() => void sellCopies()}
                     disabled={disabled}
                   >
-                    {SELL_WORDS.copiesConfirm}
+                    {words.copiesConfirm}
                   </Button>
                 </div>
               )}

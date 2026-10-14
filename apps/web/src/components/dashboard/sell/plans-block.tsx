@@ -47,6 +47,11 @@ export interface PlansBlockProps {
   saved: readonly SavedPlan[] | null;
   /** The listing's price per use as it is typed in the same form. */
   perUsePrice: string;
+  /**
+   * Whether the listing may offer a free trial. Left out, it may, and the block is what it was. A
+   * workflow's listing may not: the API refuses a trial on it, so its switch is not drawn.
+   */
+  offersTrial?: boolean;
   disabled?: boolean;
 }
 
@@ -59,7 +64,16 @@ export interface PlansBlockProps {
  * Under the rows, one switch: the listing's trial of some uses at no price,
  * which a buyer starts once. It goes with the same save as one more plan.
  */
-export function PlansBlock({ form, onChange, errors, limits, saved, perUsePrice, disabled = false }: PlansBlockProps) {
+export function PlansBlock({
+  form,
+  onChange,
+  errors,
+  limits,
+  saved,
+  perUsePrice,
+  offersTrial = true,
+  disabled = false,
+}: PlansBlockProps) {
   const id = useId();
   const confirm = useConfirm();
   const ending = endingPlanLines(form, saved);
@@ -132,48 +146,50 @@ export function PlansBlock({ form, onChange, errors, limits, saved, perUsePrice,
         </Button>
       )}
 
-      <div className="space-y-3 rounded-md border bg-card p-4">
-        <div className="flex items-center justify-between gap-4">
-          <Label htmlFor={`${id}-trial`} className="text-sm font-normal text-foreground">
-            {TRIAL_WORDS.offer}
-          </Label>
-          <Switch id={`${id}-trial`} checked={trial.on} onCheckedChange={(on) => void switchTrial(on)} disabled={disabled} />
-        </div>
-
-        {/* Switched off, not yet saved: said beside the switch that did it. */}
-        {trialEnding && (
-          <p role="status" className="text-sm text-muted-foreground">
-            {trialEnding}
-          </p>
-        )}
-
-        {trial.on && (
-          <div className="space-y-1.5">
-            <Label htmlFor={`${id}-trial-uses`}>{TRIAL_WORDS.uses}</Label>
-            <Input
-              id={`${id}-trial-uses`}
-              type="text"
-              inputMode="numeric"
-              autoComplete="off"
-              className="max-w-48"
-              value={trial.uses}
-              placeholder="20"
-              onChange={(event) => onChange(withTrial(form, { uses: event.target.value }))}
-              aria-describedby={trialProblem ? `${id}-trial-error ${id}-trial-note` : `${id}-trial-note`}
-              aria-invalid={trialProblem ? true : undefined}
-              disabled={disabled}
-            />
-            {trialProblem && (
-              <p id={`${id}-trial-error`} role="alert" className="text-sm text-danger">
-                {trialProblem}
-              </p>
-            )}
-            <p id={`${id}-trial-note`} className="text-sm text-muted-foreground">
-              {trialNote(limits)}
-            </p>
+      {offersTrial && (
+        <div className="space-y-3 rounded-md border bg-card p-4">
+          <div className="flex items-center justify-between gap-4">
+            <Label htmlFor={`${id}-trial`} className="text-sm font-normal text-foreground">
+              {TRIAL_WORDS.offer}
+            </Label>
+            <Switch id={`${id}-trial`} checked={trial.on} onCheckedChange={(on) => void switchTrial(on)} disabled={disabled} />
           </div>
-        )}
-      </div>
+
+          {/* Switched off, not yet saved: said beside the switch that did it. */}
+          {trialEnding && (
+            <p role="status" className="text-sm text-muted-foreground">
+              {trialEnding}
+            </p>
+          )}
+
+          {trial.on && (
+            <div className="space-y-1.5">
+              <Label htmlFor={`${id}-trial-uses`}>{TRIAL_WORDS.uses}</Label>
+              <Input
+                id={`${id}-trial-uses`}
+                type="text"
+                inputMode="numeric"
+                autoComplete="off"
+                className="max-w-48"
+                value={trial.uses}
+                placeholder="20"
+                onChange={(event) => onChange(withTrial(form, { uses: event.target.value }))}
+                aria-describedby={trialProblem ? `${id}-trial-error ${id}-trial-note` : `${id}-trial-note`}
+                aria-invalid={trialProblem ? true : undefined}
+                disabled={disabled}
+              />
+              {trialProblem && (
+                <p id={`${id}-trial-error`} role="alert" className="text-sm text-danger">
+                  {trialProblem}
+                </p>
+              )}
+              <p id={`${id}-trial-note`} className="text-sm text-muted-foreground">
+                {trialNote(limits)}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
 
       <p className="text-xs text-muted-foreground">{PLAN_WORDS.noUnlimited}</p>
     </section>

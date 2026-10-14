@@ -22,6 +22,8 @@ import { formatDuration, formatRelative, prettyJson } from "./format";
 import { StatusBadge } from "./status-badge";
 import { StepResultCard } from "./step-result-card";
 import { usePoll } from "./use-poll";
+import { PAID_RUN_LABEL, PAID_RUN_TRIGGER } from "@/lib/workflow-sell";
+
 import { stepLevels } from "./workflow-model";
 
 const ACTIVE = new Set(["queued", "running"]);
@@ -32,6 +34,8 @@ const TRIGGER_LABEL: Record<string, string> = {
   api: "Started through the API",
   schedule: "Started by a schedule",
   job: "Started by a marketplace job",
+  // A run a buyer paid for on the workflow's page or through its paid address. Who the buyer is is not said.
+  [PAID_RUN_TRIGGER]: PAID_RUN_LABEL,
 };
 
 function isEmptyObject(value: unknown): boolean {

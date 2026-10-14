@@ -30,6 +30,8 @@ import { StatusBadge } from "@/components/dashboard/workflows/status-badge";
 import { TaskFormDialog } from "@/components/dashboard/workflows/task-form-dialog";
 import { EXECUTION_MODES } from "@/components/dashboard/workflows/workflow-model";
 import { cn } from "@/lib/utils";
+import { codeOf } from "@/lib/agent-page";
+import { WORKFLOW_SELL_WORDS, refusedForSale } from "@/lib/workflow-sell";
 
 const NEW_WORKFLOW = "/dashboard/orchestrations/new";
 
@@ -79,7 +81,19 @@ export default function WorkflowsPage() {
       await orchestrationApi.update(workflow.id, { isEnabled: !workflow.isEnabled });
       load(true);
     } catch (error) {
-      toast.error(getErrorMessage(error, "Could not change the workflow"));
+      refused(workflow, error, "Could not change the workflow");
+    }
+  }
+
+  // The API's own sentence. A workflow on sale, or one people have paid for, is stopped from its Sell part
+  // first: the refusal offers the way there.
+  function refused(workflow: Orchestration, error: unknown, fallback: string) {
+    const message = getErrorMessage(error, fallback);
+    if (refusedForSale(codeOf(error))) {
+      const sell = `/dashboard/orchestrations/${workflow.id}?tab=api`;
+      toast.error(message, { action: { label: WORKFLOW_SELL_WORDS.openSell, onClick: () => router.push(sell) } });
+    } else {
+      toast.error(message);
     }
   }
 
@@ -99,7 +113,7 @@ export default function WorkflowsPage() {
       toast.success("Workflow deleted");
       load(true);
     } catch (error) {
-      toast.error(getErrorMessage(error, "Could not delete the workflow"));
+      refused(workflow, error, "Could not delete the workflow");
     }
   }
 

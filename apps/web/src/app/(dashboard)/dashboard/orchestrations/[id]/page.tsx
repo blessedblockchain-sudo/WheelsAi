@@ -35,6 +35,8 @@ import {
   useWorkflowResources,
 } from "@/components/dashboard/workflows/use-workflow-resources";
 import { WorkflowEditor } from "@/components/dashboard/workflows/workflow-editor";
+import { codeOf } from "@/lib/agent-page";
+import { WORKFLOW_SELL_WORDS, refusedForSale } from "@/lib/workflow-sell";
 
 const LIST = "/dashboard/orchestrations";
 type TabId = "editor" | "runs" | "schedules" | "api";
@@ -126,7 +128,18 @@ function WorkflowContent() {
       // it has to follow, or the next save of the open draft would look stale.
       setWorkflow((w) => (w ? { ...w, isEnabled: updated.isEnabled, updatedAt: updated.updatedAt } : w));
     } catch (error) {
-      toast.error(getErrorMessage(error, "Could not change the workflow"));
+      refused(error, "Could not change the workflow");
+    }
+  }
+
+  // The API's own sentence. A workflow on sale, or one people have paid for, is stopped from its Sell part
+  // first: the refusal offers the way there.
+  function refused(error: unknown, fallback: string) {
+    const message = getErrorMessage(error, fallback);
+    if (refusedForSale(codeOf(error))) {
+      toast.error(message, { action: { label: WORKFLOW_SELL_WORDS.openSell, onClick: () => go({ tab: "api", run: null }) } });
+    } else {
+      toast.error(message);
     }
   }
 
@@ -146,7 +159,7 @@ function WorkflowContent() {
       toast.success("Workflow deleted");
       router.push(LIST);
     } catch (error) {
-      toast.error(getErrorMessage(error, "Could not delete the workflow"));
+      refused(error, "Could not delete the workflow");
     }
   }
 

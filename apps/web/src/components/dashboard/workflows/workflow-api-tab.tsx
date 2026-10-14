@@ -5,15 +5,20 @@ import { PlugZap } from "lucide-react";
 
 import type { OrchestrationDetail } from "@/lib/api";
 import { workflowSnippets } from "@/lib/public-urls";
+import { ownAddressLine } from "@/lib/workflow-sell";
 import { CopyRow, Snippet } from "@/components/dashboard/agent-tabs/api-tab";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
+import { WorkflowSell } from "./workflow-sell";
+
 /**
- * The workflow's OpenAI-compatible API: where it is, how to name it, what a
- * request does to a run, and code that calls it. Everything shown is what
- * the API returned for this workflow.
+ * The workflow's API: first its Sell part, where people outside the
+ * organization are let to run it and pay per run; then the owner's own
+ * OpenAI-compatible address: where it is, how to name it, what a request
+ * does to a run, and code that calls it. Everything shown is what the API
+ * returned for this workflow.
  */
 export function WorkflowApiTab({ workflow }: { workflow: OrchestrationDetail }) {
   const code = workflowSnippets({
@@ -26,6 +31,8 @@ export function WorkflowApiTab({ workflow }: { workflow: OrchestrationDetail }) 
 
   return (
     <div className="space-y-6">
+      <WorkflowSell workflow={workflow} />
+
       {code && workflow.apiEndpoint && workflow.openaiBaseUrl ? (
         <Card>
           <CardHeader>
@@ -68,6 +75,8 @@ export function WorkflowApiTab({ workflow }: { workflow: OrchestrationDetail }) 
               It starts one run, listed under Runs like any other, and counts as one API call on your plan. Each
               step is billed by its own rules, exactly as when you run the workflow from here or on a schedule.
             </li>
+            {/* The owner's own address is not the one buyers pay through: that one is under Sell. */}
+            <li>{ownAddressLine(workflow.openaiModel)}</li>
             <li>
               The request waits for the run. This workflow&apos;s time limit is {limitSeconds} seconds; a run that
               reaches it is stopped and the request answers <code>504</code>. Set your client&apos;s timeout above

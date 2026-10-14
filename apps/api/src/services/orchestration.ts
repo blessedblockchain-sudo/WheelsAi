@@ -44,6 +44,19 @@ const notFound = () => new WorkflowError("not_found", "Workflow not found");
 // A workflow on sale
 // ============================================
 
+/** The part of the database the test below reads. The Prisma client is one. */
+export interface SaleHoldDb {
+  agentListing: {
+    findFirst(args: {
+      where: { orchestrationId: string; publisherId: string };
+      select: { id: true; status: true };
+    }): Promise<{ id: string; status: string } | null>;
+  };
+  agentSubscription: {
+    count(args: { where: { listingId: string; status: "active"; currentPeriodEnd: { gt: Date } } }): Promise<number>;
+  };
+}
+
 /**
  * What holds a workflow to staying runnable: its listing is published
  * ("on_sale"), or somebody is still on a plan for it ("on_plan": a
@@ -53,15 +66,23 @@ const notFound = () => new WorkflowError("not_found", "Workflow not found");
  *
  * The listing is read by the workflow AND its publisher, which is the
  * workflow's own organization: nothing is said of another organization's.
+ *
+ * The one test of a workflow on sale: the Stop warning of a deployment asks
+ * it too (services/deploymentDependents.ts), on the database it is given.
  */
-async function saleHold(orchestrationId: string, orgId: string, now: Date): Promise<"on_sale" | "on_plan" | null> {
-  const listing = await prisma.agentListing.findFirst({
+export async function saleHold(
+  orchestrationId: string,
+  orgId: string,
+  now: Date,
+  db: SaleHoldDb = prisma as unknown as SaleHoldDb,
+): Promise<"on_sale" | "on_plan" | null> {
+  const listing = await db.agentListing.findFirst({
     where: { orchestrationId, publisherId: orgId },
     select: { id: true, status: true },
   });
   if (!listing) return null;
   if (listing.status === "published") return "on_sale";
-  const onPlan = await prisma.agentSubscription.count({
+  const onPlan = await db.agentSubscription.count({
     where: { listingId: listing.id, status: "active", currentPeriodEnd: { gt: now } },
   });
   return onPlan > 0 ? "on_plan" : null;

@@ -33,7 +33,7 @@ import {
 const defaultLogger = createLogger("workflow-listing");
 
 /** A step as these reads take it. */
-interface StepRow {
+export interface WorkflowStepRow {
   stepType: string;
   agentId: string | null;
   fallbackAgentId: string | null;
@@ -46,7 +46,7 @@ interface WorkflowRow {
   isEnabled: boolean;
   timeout: number;
   inputSchema: unknown;
-  steps: StepRow[];
+  steps: WorkflowStepRow[];
 }
 
 /** The part of the database these reads use. The Prisma client and a transaction are each one. */
@@ -98,9 +98,30 @@ const WORKFLOW_COLUMNS = {
 
 const unique = (ids: Array<string | null>): string[] => [...new Set(ids.filter((id): id is string => !!id))];
 
+/**
+ * What a workflow's steps need to be serving for it to run now, the one
+ * answer to it (the Stop warning of a deployment asks it too,
+ * services/deploymentDependents.ts):
+ *
+ *   modelStepDeploymentIds  the deployment of each model step, by its id;
+ *                           null for a model step that names none, which
+ *                           has nothing to run on
+ *   stepAgentIds            the agent of each step. A fallback agent is not
+ *                           among them: the step it stands behind decides.
+ */
+export function workflowNeedsOf(steps: ReadonlyArray<WorkflowStepRow>): {
+  modelStepDeploymentIds: Array<string | null>;
+  stepAgentIds: string[];
+} {
+  return {
+    modelStepDeploymentIds: steps.filter((step) => step.stepType === "model").map((step) => step.deploymentId),
+    stepAgentIds: unique(steps.map((step) => step.agentId)),
+  };
+}
+
 interface Loaded {
   workflow: WorkflowForListing;
-  steps: StepRow[];
+  steps: WorkflowStepRow[];
   /** The agents of the organization that a step or a fallback names. */
   agents: Array<{ id: string; modelConfig: unknown }>;
 }
@@ -164,8 +185,8 @@ export async function loadWorkflowRunReadiness(
   const db = deps.db ?? (prisma as unknown as WorkflowListingDb);
   const orgId = loaded.workflow.orgId;
 
-  const modelSteps = loaded.steps.filter((step) => step.stepType === "model");
-  const deploymentIds = unique(modelSteps.map((step) => step.deploymentId));
+  const needs = workflowNeedsOf(loaded.steps);
+  const deploymentIds = unique(needs.modelStepDeploymentIds);
   const running =
     deploymentIds.length === 0
       ? []
@@ -175,9 +196,9 @@ export async function loadWorkflowRunReadiness(
         });
   const serving = new Set(running.map((deployment) => deployment.id));
   // A model step with no deployment at all has nothing to run on.
-  const modelStepsServe = modelSteps.every((step) => step.deploymentId !== null && serving.has(step.deploymentId));
+  const modelStepsServe = needs.modelStepDeploymentIds.every((id) => id !== null && serving.has(id));
 
-  const stepAgentIds = new Set(unique(loaded.steps.map((step) => step.agentId)));
+  const stepAgentIds = new Set(needs.stepAgentIds);
   // No free models offered: an agent with no model of its own is not on a
   // model its organization runs, whatever it would fall back to.
   const hostedModelIds = unique(

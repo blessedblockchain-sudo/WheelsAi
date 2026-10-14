@@ -2331,6 +2331,16 @@ test("GET /:id/dependents answers the agents that answer from the deployment, fo
       },
       { id: "a_2", name: "Helper", onSale: false, listing: null },
     ],
+    // The workflows on sale that need it are passed through as they are.
+    workflows: [
+      {
+        id: "wf_1",
+        name: "Digest",
+        onSale: true,
+        listing: { id: "l_w", title: "Daily digest", subscribers: 3 },
+        renewalGraceDays: 3,
+      },
+    ],
   };
   const { app } = await makeApp({
     db,
@@ -2360,7 +2370,7 @@ test("GET /:id/dependents reads only: another organization's deployment is a 404
 
   const stopped = await app.inject({ method: "GET", url: "/dep_1/dependents" });
   assert.equal(stopped.statusCode, 200);
-  assert.deepEqual(stopped.json(), { agents: [] });
+  assert.deepEqual(stopped.json(), { agents: [], workflows: [] });
 
   const theirs = await app.inject({ method: "GET", url: "/dep_theirs/dependents" });
   assert.equal(theirs.statusCode, 404);
@@ -2377,7 +2387,7 @@ test("GET /:id/dependents needs a caller", async () => {
     authed: false,
     dependents: async (args) => {
       asked.push(args);
-      return { agents: [] };
+      return { agents: [], workflows: [] };
     },
   });
   const res = await app.inject({ method: "GET", url: "/dep_1/dependents" });

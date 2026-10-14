@@ -5,6 +5,7 @@ import test from "node:test";
 
 import { listDeploymentDependents, type DeploymentDependentsDb } from "../services/deploymentDependents.js";
 import { listHostedModelChoices } from "../services/hostedModelChoices.js";
+import { PAST_DUE_GRACE_DAYS } from "../services/subscriptionAccess.js";
 
 // Which agents stop answering when a model deployment is stopped, against an
 // in-memory database. What these pin: an agent is listed by the model the
@@ -46,7 +47,14 @@ const listing = (id: string, agentId: string, over: Row = {}): Row => ({
   ...over,
 });
 
-function makeDb(seed: { deployments?: Row[]; agents?: Row[]; listings?: Row[]; subs?: Row[]; installs?: Row[] }) {
+function makeDb(seed: {
+  deployments?: Row[];
+  agents?: Row[];
+  listings?: Row[];
+  subs?: Row[];
+  installs?: Row[];
+  workflows?: Row[];
+}) {
   const reads: string[] = [];
   // The database's own match: the stored text contains the id. Anything
   // else in the filter matches nothing, as an unknown filter should.
@@ -55,51 +63,90 @@ function makeDb(seed: { deployments?: Row[]; agents?: Row[]; listings?: Row[]; s
     const stored = row.modelConfig?.[path[0]];
     return typeof contains === "string" && typeof stored === "string" && stored.includes(contains);
   };
-  const db: DeploymentDependentsDb = {
+  // A step matches one condition of the database's OR when every field it names matches.
+  const stepMatches = (step: Row, cond: Row) =>
+    Object.entries(cond).every(([key, value]) =>
+      value && typeof value === "object" && "in" in value ? value.in.includes(step[key]) : step[key] === value,
+    );
+  const db = {
     deployment: {
-      findFirst: async ({ where }) => {
+      findFirst: async ({ where }: Row) => {
         reads.push("deployment.findFirst");
-        return ((seed.deployments ?? []).find((d) => d.id === where.id && d.orgId === where.orgId) as never) ?? null;
+        return (seed.deployments ?? []).find((d) => d.id === where.id && d.orgId === where.orgId) ?? null;
       },
-      findMany: async ({ where }) => {
+      findMany: async ({ where }: Row) => {
         reads.push("deployment.findMany");
         return (seed.deployments ?? []).filter(
           (d) => d.orgId === where.orgId && d.id !== where.id.not && d.status === where.status,
-        ) as never;
+        );
       },
     },
     agent: {
-      findMany: async ({ where }) => {
+      findMany: async ({ where }: Row) => {
         reads.push("agent.findMany");
         return (seed.agents ?? [])
           .filter((a) => a.orgId === where.orgId && (where.OR as Row[]).some((cond) => pathEquals(a, cond)))
-          .sort((a, b) => a.name.localeCompare(b.name)) as never;
+          .sort((a, b) => a.name.localeCompare(b.name));
       },
     },
     agentListing: {
-      findMany: async ({ where }) => {
+      findMany: async ({ where }: Row) => {
         reads.push("agentListing.findMany");
+        if ("orchestrationId" in where) {
+          return (seed.listings ?? []).filter(
+            (l) => where.orchestrationId.in.includes(l.orchestrationId) && l.publisherId === where.publisherId,
+          );
+        }
         return (seed.listings ?? []).filter(
           (l) => where.agentId.in.includes(l.agentId) && l.status === where.status && l.sells === where.sells,
-        ) as never;
+        );
       },
+      // The on-sale test of services/orchestration.ts, on this database.
+      findFirst: async ({ where }: Row) =>
+        (seed.listings ?? []).find(
+          (l) => l.orchestrationId === where.orchestrationId && l.publisherId === where.publisherId,
+        ) ?? null,
     },
     agentSubscription: {
-      findMany: async ({ where }) =>
+      findMany: async ({ where }: Row) =>
         (seed.subs ?? []).filter(
           (s) => where.listingId.in.includes(s.listingId) && where.status.in.includes(s.status),
-        ) as never,
+        ),
+      count: async ({ where }: Row) =>
+        (seed.subs ?? []).filter(
+          (s) =>
+            s.listingId === where.listingId &&
+            s.status === where.status &&
+            s.currentPeriodEnd instanceof Date &&
+            s.currentPeriodEnd > where.currentPeriodEnd.gt,
+        ).length,
     },
     agentInstall: {
-      findMany: async ({ where }) =>
-        (seed.installs ?? []).filter((i) => where.listingId.in.includes(i.listingId) && i.kind === where.kind) as never,
+      findMany: async ({ where }: Row) =>
+        (seed.installs ?? []).filter((i) => where.listingId.in.includes(i.listingId) && i.kind === where.kind),
     },
-  };
+    orchestration: {
+      findMany: async ({ where }: Row) => {
+        reads.push("orchestration.findMany");
+        return (seed.workflows ?? [])
+          .filter(
+            (w) =>
+              w.orgId === where.orgId &&
+              (w.steps as Row[]).some((step) => (where.steps.some.OR as Row[]).some((cond) => stepMatches(step, cond))),
+          )
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .map((w) => ({ id: w.id, name: w.name, steps: w.steps }));
+      },
+    },
+  } as unknown as DeploymentDependentsDb;
   return { db, reads };
 }
 
+const NOW = new Date("2026-10-14T12:00:00Z");
+const DAY = 24 * 60 * 60 * 1000;
+
 const dependentsOf = (seed: Parameters<typeof makeDb>[0], deploymentId = "dep_1", orgId = ORG) =>
-  listDeploymentDependents({ orgId, deploymentId }, { db: makeDb(seed).db });
+  listDeploymentDependents({ orgId, deploymentId }, { db: makeDb(seed).db, now: () => NOW });
 
 test("the agents set to the deployment's model are listed by name, with the listing that sells use and who pays monthly", async () => {
   const result = await dependentsOf({
@@ -143,6 +190,7 @@ test("the agents set to the deployment's model are listed by name, with the list
       { id: "a_3", name: "Legacy", onSale: false, listing: null },
       { id: "a_2", name: "Zed", onSale: false, listing: null },
     ],
+    workflows: [],
   });
 });
 
@@ -183,7 +231,11 @@ test("only a published listing that sells use puts an agent on sale", async () =
       subs: [{ listingId: "l_1", subscriberId: "buyer_1", status: "active" }],
       installs: [{ listingId: "l_1", buyerId: "buyer_1", kind: "use" }],
     });
-    assert.deepEqual(result, { agents: [{ id: "a_1", name: "Analyst", onSale: false, listing: null }] }, JSON.stringify(over));
+    assert.deepEqual(
+      result,
+      { agents: [{ id: "a_1", name: "Analyst", onSale: false, listing: null }], workflows: [] },
+      JSON.stringify(over),
+    );
   }
 });
 
@@ -191,7 +243,7 @@ test("nothing depends on a deployment while another running one would answer the
   const agents = [agent("a_1", "Analyst", { externalModel: LLAMA })];
   const twin = (over: Row = {}) => deployment({ id: "dep_2", slug: "twin", nosanaJobIds: ["dm_2"], ...over });
 
-  assert.deepEqual(await dependentsOf({ deployments: [deployment(), twin()], agents }), { agents: [] });
+  assert.deepEqual(await dependentsOf({ deployments: [deployment(), twin()], agents }), { agents: [], workflows: [] });
 
   // None of these would answer the agents after the stop.
   for (const other of [
@@ -213,16 +265,19 @@ test("nothing depends on a deployment while another running one would answer the
 
 test("a deployment nothing answers from has no dependents, and no agent is read for it", async () => {
   const agents = [agent("a_1", "Analyst", { externalModel: LLAMA })];
-  for (const over of [
-    { status: "stopped" },
-    { status: "failed" },
-    { nosanaJobIds: ["mock_deploy_1"] },
-    { nosanaJobIds: ["mock_job_1"] },
-    { nosanaJobIds: [] },
-  ]) {
+  // Stopped or failed: nothing runs on it, and nothing more is read.
+  for (const over of [{ status: "stopped" }, { status: "failed" }]) {
     const { db, reads } = makeDb({ deployments: [deployment(over)], agents });
-    assert.deepEqual(await listDeploymentDependents({ orgId: ORG, deploymentId: "dep_1" }, { db }), { agents: [] });
+    assert.deepEqual(await listDeploymentDependents({ orgId: ORG, deploymentId: "dep_1" }, { db }), { agents: [], workflows: [] });
     assert.deepEqual(reads, ["deployment.findFirst"], JSON.stringify(over));
+  }
+  // The development stand-in answers no agent chat, so no agent is read; a
+  // model step of a workflow is served by its deployment whatever it is
+  // billed by, so the workflows are asked about.
+  for (const over of [{ nosanaJobIds: ["mock_deploy_1"] }, { nosanaJobIds: ["mock_job_1"] }, { nosanaJobIds: [] }]) {
+    const { db, reads } = makeDb({ deployments: [deployment(over)], agents });
+    assert.deepEqual(await listDeploymentDependents({ orgId: ORG, deploymentId: "dep_1" }, { db }), { agents: [], workflows: [] });
+    assert.deepEqual(reads, ["deployment.findFirst", "orchestration.findMany"], JSON.stringify(over));
   }
 });
 
@@ -256,7 +311,7 @@ test("a deployment that serves a fine-tuned model is depended on by its own name
     { ...ready, liveSlug: "Not A Slug" },
     null,
   ]) {
-    assert.deepEqual(await dependentsOf({ deployments: [tuned(model)], agents }), { agents: [] }, JSON.stringify(model));
+    assert.deepEqual(await dependentsOf({ deployments: [tuned(model)], agents }), { agents: [], workflows: [] }, JSON.stringify(model));
   }
 });
 
@@ -276,7 +331,7 @@ test("another organization's deployment is not found, and its agents and listing
   assert.equal(await dependentsOf(seed, "no_such_deployment", ORG), null);
 
   const mine = await dependentsOf(seed, "dep_1", ORG);
-  assert.deepEqual(mine, { agents: [{ id: "a_mine", name: "Mine", onSale: false, listing: null }] });
+  assert.deepEqual(mine, { agents: [{ id: "a_mine", name: "Mine", onSale: false, listing: null }], workflows: [] });
   assert.doesNotMatch(JSON.stringify(mine), /theirs/i);
 
   const theirs = await dependentsOf(seed, "dep_theirs", OTHER_ORG);
@@ -315,7 +370,197 @@ test("the model id a deployment answers is the one the model picker gives it", a
     const other = rows.find((row) => row.id !== choice.deployment.id)!;
     assert.deepEqual(
       await dependentsOf({ deployments: rows, agents: [agent("a_1", "Analyst", { externalModel: choice.id })] }, other.id),
-      { agents: [] },
+      { agents: [], workflows: [] },
     );
+  }
+});
+
+// ============================================
+// Workflows on sale
+// ============================================
+
+const WF_LISTED = "wf_listed";
+
+/** A workflow of this organization. Its steps are what the workflow's own read takes. */
+const workflow = (id: string, name: string, steps: Row[], orgId = ORG): Row => ({ id, orgId, name, steps });
+const modelStep = (deploymentId: string | null): Row => ({ stepType: "model", agentId: null, fallbackAgentId: null, deploymentId });
+const agentStep = (agentId: string, fallbackAgentId: string | null = null): Row => ({
+  stepType: "agent",
+  agentId,
+  fallbackAgentId,
+  deploymentId: null,
+});
+/** The listing that sells a workflow: its publisher is the workflow's organization. */
+const workflowListing = (id: string, orchestrationId: string, over: Row = {}): Row => ({
+  id,
+  agentId: null,
+  orchestrationId,
+  publisherId: ORG,
+  title: `Listing ${id}`,
+  status: "published",
+  sells: "use",
+  pricingModel: "per_request",
+  ...over,
+});
+
+test("a listed workflow with a model step on the deployment is named, with its listing and the buyers who pay for use", async () => {
+  const result = await dependentsOf({
+    deployments: [deployment()],
+    workflows: [workflow(WF_LISTED, "Digest", [agentStep("a_other"), modelStep("dep_1")])],
+    listings: [workflowListing("l_w", WF_LISTED)],
+    subs: [
+      { listingId: "l_w", subscriberId: "buyer_1", status: "active", currentPeriodEnd: new Date(NOW.getTime() + 9 * DAY) },
+      { listingId: "l_w", subscriberId: "buyer_2", status: "cancelled", currentPeriodEnd: new Date(NOW.getTime() + 9 * DAY) },
+    ],
+    installs: [
+      { listingId: "l_w", buyerId: "buyer_1", kind: "use" },
+      { listingId: "l_w", buyerId: "buyer_2", kind: "use" },
+    ],
+  });
+  assert.deepEqual(result, {
+    agents: [],
+    workflows: [
+      {
+        id: WF_LISTED,
+        name: "Digest",
+        onSale: true,
+        listing: { id: "l_w", title: "Listing l_w", subscribers: 1 },
+        // The days a plan that comes due waits for the workflow to run again: the renewal's own number.
+        renewalGraceDays: PAST_DUE_GRACE_DAYS,
+      },
+    ],
+  });
+  assert.equal(PAST_DUE_GRACE_DAYS, 3);
+});
+
+test("a model step is served by its own deployment only: another running deployment of the same model does not keep it running", async () => {
+  const twin = deployment({ id: "dep_2", slug: "twin", nosanaJobIds: ["dm_2"] });
+  const seed = {
+    deployments: [deployment(), twin],
+    workflows: [
+      workflow(WF_LISTED, "On the first", [modelStep("dep_1")]),
+      workflow("wf_second", "On the second", [modelStep("dep_2")]),
+    ],
+    listings: [workflowListing("l_w", WF_LISTED), workflowListing("l_w2", "wf_second")],
+  };
+  assert.deepEqual((await dependentsOf(seed, "dep_1"))!.workflows.map((w) => w.id), [WF_LISTED]);
+  // The workflow whose step is served by the second deployment is not named when the first stops.
+  assert.deepEqual((await dependentsOf(seed, "dep_2"))!.workflows.map((w) => w.id), ["wf_second"]);
+  // A model step on the development stand-in runs on it too.
+  const standIn = { ...seed, deployments: [deployment({ nosanaJobIds: ["mock_deploy_1"] })] };
+  assert.deepEqual((await dependentsOf(standIn))!.workflows.map((w) => w.id), [WF_LISTED]);
+});
+
+test("a listed workflow whose step agent answers from the deployment is named; a fallback agent alone does not make it need it", async () => {
+  const agents = [agent("a_1", "Analyst", { externalModel: LLAMA }), agent("a_2", "Elsewhere", { externalModel: "openai/gpt-4o-mini" })];
+  const result = await dependentsOf({
+    deployments: [deployment()],
+    agents,
+    workflows: [
+      workflow(WF_LISTED, "Brief", [agentStep("a_1")]),
+      // Its step is answered elsewhere; only the fallback answers from this deployment.
+      workflow("wf_fallback", "Fallback only", [agentStep("a_2", "a_1")]),
+    ],
+    listings: [workflowListing("l_w", WF_LISTED), workflowListing("l_fb", "wf_fallback")],
+  });
+  assert.deepEqual(result!.workflows, [
+    {
+      id: WF_LISTED,
+      name: "Brief",
+      onSale: true,
+      listing: { id: "l_w", title: "Listing l_w", subscribers: 0 },
+      renewalGraceDays: PAST_DUE_GRACE_DAYS,
+    },
+  ]);
+  // The agent's own answer for the same deployment is what it was.
+  assert.deepEqual(result!.agents, [{ id: "a_1", name: "Analyst", onSale: false, listing: null }]);
+});
+
+test("a step agent with another running deployment of its model keeps its workflow running: neither is named", async () => {
+  const result = await dependentsOf({
+    deployments: [deployment(), deployment({ id: "dep_2", slug: "twin", nosanaJobIds: ["dm_2"] })],
+    agents: [agent("a_1", "Analyst", { externalModel: LLAMA })],
+    workflows: [workflow(WF_LISTED, "Brief", [agentStep("a_1")])],
+    listings: [workflowListing("l_w", WF_LISTED)],
+  });
+  assert.deepEqual(result, { agents: [], workflows: [] });
+});
+
+test("a workflow is on sale while its listing is published, or while somebody's plan on it still runs, and not otherwise", async () => {
+  const steps = [modelStep("dep_1")];
+  const sub = (over: Row = {}): Row => ({
+    listingId: "l_w",
+    subscriberId: "buyer_1",
+    status: "active",
+    currentPeriodEnd: new Date(NOW.getTime() + DAY),
+    ...over,
+  });
+  const read = async (listingOver: Row | null, subs: Row[] = []) =>
+    (await dependentsOf({
+      deployments: [deployment()],
+      workflows: [workflow(WF_LISTED, "Digest", steps)],
+      listings: listingOver ? [workflowListing("l_w", WF_LISTED, listingOver)] : [],
+      subs,
+      installs: [{ listingId: "l_w", buyerId: "buyer_1", kind: "use" }],
+    }))!.workflows;
+  const named = async (listingOver: Row | null, subs: Row[] = []) => (await read(listingOver, subs)).map((w) => w.id);
+
+  assert.deepEqual(await named({}), [WF_LISTED]);
+  assert.deepEqual(
+    (await read({}, [sub()])).map((w) => [w.onSale, w.listing.subscribers]),
+    [[true, 1]],
+  );
+  // Stopped selling, with a plan that still runs: still named, with that
+  // buyer, and not on sale: its plans end at their period's end whatever the
+  // workflow can do, so the warning must not say they wait for it.
+  assert.deepEqual(await named({ status: "archived" }, [sub()]), [WF_LISTED]);
+  assert.deepEqual(
+    (await read({ status: "archived" }, [sub()])).map((w) => [w.onSale, w.listing.subscribers]),
+    [[false, 1]],
+  );
+  // Not on sale: no listing, a draft, a stopped listing whose plans have all ended.
+  assert.deepEqual(await named(null), []);
+  assert.deepEqual(await named({ status: "draft" }), []);
+  assert.deepEqual(await named({ status: "archived" }, [sub({ currentPeriodEnd: new Date(NOW.getTime() - DAY) })]), []);
+  assert.deepEqual(await named({ status: "archived" }, [sub({ status: "cancelled" })]), []);
+});
+
+test("another organization's workflow is never named, and an agent's answer for the deployment is what it was", async () => {
+  const seed = {
+    deployments: [deployment()],
+    agents: [agent("a_1", "Analyst", { externalModel: LLAMA })],
+    listings: [listing("l_1", "a_1"), workflowListing("l_theirs", "wf_theirs", { publisherId: OTHER_ORG })],
+    subs: [{ listingId: "l_1", subscriberId: "buyer_1", status: "active" }],
+    installs: [{ listingId: "l_1", buyerId: "buyer_1", kind: "use" }],
+  };
+  const withoutWorkflows = await dependentsOf(seed);
+  const withTheirs = await dependentsOf({
+    ...seed,
+    workflows: [workflow("wf_theirs", "Theirs", [modelStep("dep_1"), agentStep("a_1")], OTHER_ORG)],
+  });
+  assert.deepEqual(withTheirs, withoutWorkflows);
+  assert.deepEqual(withTheirs, {
+    agents: [
+      {
+        id: "a_1",
+        name: "Analyst",
+        onSale: true,
+        listing: { id: "l_1", title: "Listing l_1", pricingModel: "monthly", subscribers: 1 },
+      },
+    ],
+    workflows: [],
+  });
+  assert.doesNotMatch(JSON.stringify(withTheirs), /theirs/i);
+});
+
+test("a stopped deployment answers both lists empty, whatever runs on it", async () => {
+  for (const status of ["stopped", "failed"]) {
+    const result = await dependentsOf({
+      deployments: [deployment({ status })],
+      agents: [agent("a_1", "Analyst", { externalModel: LLAMA })],
+      workflows: [workflow(WF_LISTED, "Digest", [modelStep("dep_1"), agentStep("a_1")])],
+      listings: [workflowListing("l_w", WF_LISTED)],
+    });
+    assert.deepEqual(result, { agents: [], workflows: [] }, status);
   }
 });

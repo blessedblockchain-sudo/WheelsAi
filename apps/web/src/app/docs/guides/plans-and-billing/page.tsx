@@ -7,7 +7,7 @@ import { Callout, DocTable } from "@/components/marketing/prose";
 export const metadata: Metadata = {
   title: "Plans and billing",
   description:
-    "WheelsAI plans (Starter, Pro, Enterprise), what counts as an API call, credits and the ledger, and the ways to pay: Stripe card checkout, Solana wallet top-ups in USDC or SOL, a transfer to your own deposit address from an exchange or any wallet, and x402 micropayments.",
+    "WheelsAI plans (Starter, Pro, Enterprise), what counts as an API call, credits and the ledger, and the ways to pay: Stripe card checkout, Solana wallet top-ups in USDC or SOL, a transfer to your own deposit address from an exchange or any wallet, paying a deployment per request from a wallet, and paying an agent's use from a wallet with x402.",
 };
 
 const toc = [
@@ -22,7 +22,7 @@ const toc = [
   { id: "card", title: "Card (Stripe)", sub: true },
   { id: "wallet", title: "Wallet top-up", sub: true },
   { id: "deposit-address", title: "Send from an exchange or another wallet", sub: true },
-  { id: "x402", title: "x402 per request", sub: true },
+  { id: "deployment-wallet", title: "A deployment, per request from a wallet", sub: true },
   { id: "who", title: "Who can pay" },
 ];
 
@@ -438,19 +438,26 @@ export default function PlansBillingPage() {
         which take an API key or a session.
       </p>
 
-      <h3 id="x402">x402 per request</h3>
+      <h3 id="deployment-wallet">A deployment, per request from a wallet</h3>
       <p>
-        Calls to a <code>/v1</code> deployment that is billed per request can be paid one request
-        at a time with a signed Solana payment, in USDC or SOL, instead of from credits. A dedicated deployment is billed for GPU time and is
-        never challenged for an x402 payment. The API answers <code>402 Payment Required</code> with the exact amount, asset and destination;
-        your client signs a matching transfer and retries with an <code>X-Payment</code> header. USDC goes to the token account
-        the answer names, and a SOL price is held for you by the <code>quote</code> in the answer. A payment transaction can be
-        used once. If a paid request then fails, the payment is returned to your credit balance: amounts under a cent add up
-        and appear, as <strong>Paid request returned as credits</strong>, once they reach a cent. See the{" "}
-        <Link href="/docs/api/inference#x402">x402 flow</Link> for the headers and body.
+        Calls to a <code>/v1</code> deployment that is billed per request can be paid one request at a time with a signed
+        Solana payment, in USDC or SOL, instead of from credits. A dedicated deployment is billed for GPU time and is never
+        asked for such a payment. The API answers <code>402 Payment Required</code> with the exact amount, asset and
+        destination in its <code>X-Payment-Required</code> header; your client signs a matching transfer and retries with
+        an <code>X-Payment</code> header. USDC goes to the token account the answer names, and a SOL price is held for you
+        by the <code>quote</code> in the answer. A payment transaction can be used once. If a paid request then fails, the
+        payment is returned to your credit balance: amounts under a cent add up and appear, as{" "}
+        <strong>Paid request returned as credits</strong>, once they reach a cent. See{" "}
+        <Link href="/docs/api/inference#deployment-wallet">paying a deployment per request from a wallet</Link> for the
+        headers and body.
       </p>
       <Callout>
-        <p>x402 payments go to the platform treasury, not to a marketplace creator.</p>
+        <p>
+          A payment for a deployment&apos;s request goes to WheelsAI&apos;s treasury, not to a marketplace creator. To let
+          people with no account pay each use of an agent you sell from their own wallet, with x402, see{" "}
+          <Link href="/docs/api/inference#x402">pay an agent from a wallet, with x402</Link>: its creator earns 90% of each
+          use.
+        </p>
       </Callout>
 
       <h2 id="who">Who can pay</h2>

@@ -42,7 +42,7 @@ export default function DocsHome() {
           List an agent as free, per-request, monthly or tokenized, and get paid for every use.
         </CardLink>
         <CardLink href="/docs/guides/plans-and-billing" title="Plans and billing">
-          Starter, Pro and Enterprise; credits by card, wallet top-up or x402 micropayments.
+          Starter, Pro and Enterprise; credits by card or wallet top-up; a deployment paid per request from a wallet; an agent&apos;s use paid with x402.
         </CardLink>
         <CardLink href="/docs/api" title="API reference">
           Authentication, errors, rate limits and every endpoint group, with the fields each one takes and returns.

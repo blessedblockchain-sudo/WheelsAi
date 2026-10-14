@@ -1,9 +1,16 @@
-# x402 pay-per-request: how it works and how to prove it
+# A deployment paid per request from a wallet: how it works and how to prove it
 
-x402 pays for one request with one on-chain transfer, following HTTP 402. This page is for
-whoever runs the API: what happens to a payment, the settings, the proof script, and the
-record of the first devnet run. The customer's side (the 402 body, the `X-Payment` header,
-the reasons a payment is refused) is in the API reference at `/docs/api/inference#x402`.
+This page covers a deployment's own wallet payment: one `/v1` request to a deployment billed
+per request, paid with one on-chain transfer, following HTTP 402 in WheelsAI's own headers
+`X-Payment-Required` and `X-Payment`. Its settings and code keep the name x402, but it is not
+the published x402 format, and the public docs call it paying a deployment per request from a
+wallet. The x402 door of an agent's listing (one use paid from a wallet in the published
+format, version 2) is a different path: it is proven by
+`apps/api/scripts/payments-proof/walk-devnet-x402.cjs`, run as `docs/PAYMENTS-RUN.md` says.
+This page is for whoever runs the API: what happens to a payment, the settings, the proof
+script, and the record of the first devnet run. The customer's side (the 402 body, the
+`X-Payment` header, the reasons a payment is refused) is in the API reference at
+`/docs/api/inference#deployment-wallet`.
 
 ## What happens to a payment
 

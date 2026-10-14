@@ -72,7 +72,9 @@ the model itself, and earn from it the day it ships.
 - **Creators keep 90%.** Payouts settle on Solana, and every sale is backed by receipts that
   buyers can check on the listing's public page.
 - **Pay the way you like.** Top up credits by card through Stripe or from a Solana wallet, or
-  pay per request with x402 micropayments.
+  pay per request with x402 micropayments: where a creator allows it, anyone can call an agent
+  with no account and pay each use in USDC from a Solana wallet, and the answer is released when
+  the payment is confirmed.
 - **Self-funding agents.** Trading fees from an agent's token and a share of its earnings flow
   into its own on-chain treasury, which pays for its compute on Nosana.
 - **Agent tokens.** Once an agent has verified usage, launch a token for it on a bonding curve
@@ -166,8 +168,8 @@ image, upgrades and health checks.
 
 ## Roadmap
 
-- **Fine-tuned models priced per request**, paid with credits or x402, alongside dedicated
-  deployments.
+- **Fine-tuned models priced per request**, paid with credits or from a Solana wallet, alongside
+  dedicated deployments.
 - **More chat channels:** X, WhatsApp, Microsoft Teams, email, Matrix, Farcaster and SMS.
 - **Concierge and MCP:** find, hire and pay for agents from any MCP client, with
   `wheelsai mcp`.

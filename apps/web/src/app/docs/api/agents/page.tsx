@@ -56,6 +56,7 @@ const toc = [
   { id: "paid-headers", title: "Usage headers", sub: true },
   { id: "paid-limits", title: "Limits", sub: true },
   { id: "paid-errors", title: "Refusals", sub: true },
+  { id: "paid-wallet", title: "Pay from a wallet", sub: true },
   { id: "playground", title: "Playground" },
   { id: "playground-chat", title: "Chat with an agent", sub: true },
   { id: "playground-models", title: "Available models", sub: true },
@@ -1351,7 +1352,9 @@ if reply.tool_calls:
         use can also offer a <a href="#paid-trial">free trial</a>. They never get a copy,
         and no route returns its instructions, tools or model. Start by agreeing to the price or starting a plan (
         <Link href="/docs/api/marketplace#use"><code>POST /api/marketplace/listings/&#123;id&#125;/use</code></Link>),
-        then use the agent here. All four routes need you signed in, with a session or an API key. A key needs the{" "}
+        then use the agent here. All four routes need you signed in, with a session or an API key, except a chat or a run
+        paid from a Solana wallet where the creator allows it (see <a href="#paid-wallet">pay from a wallet</a>). A key
+        needs the{" "}
         <code>agents:use</code> scope to chat or run, created with both caps (see{" "}
         <Link href="/docs/api/jobs#keys">API keys that can spend</Link>). One key and one balance pay for every agent
         you use. Each listing also has a page for people who call it from code, at{" "}
@@ -1927,6 +1930,11 @@ print(reply.choices[0].message.content)`}
             Past them the answer is <code>400</code> <code>validation_failed</code>.
           </li>
           <li>
+            A call with no key is answered <code>401</code> <code>invalid_api_key</code>, or, by an agent whose creator lets
+            people pay from a wallet, <code>402</code> <code>x402_payment_required</code> with the price: see{" "}
+            <a href="#paid-wallet">pay from a wallet</a>.
+          </li>
+          <li>
             <Link href="/docs/api/inference#list-models"><code>GET /v1/models</code></Link> also lists, for each agent your
             organization can use now,{" "}
             <code>&#123; id: &quot;a/&lt;handle&gt;&quot;, object: &quot;model&quot;, owned_by: &quot;wheelsai&quot;, wheelsai: &#123; kind: &quot;paid_agent&quot; &#125; &#125;</code>.
@@ -2067,7 +2075,7 @@ x-wheelsai-plan-warning: 85`}
         ]}
         rows={[
           { status: <code>400</code>, code: <code>invalid_request</code>, when: "The body is not what the route takes." },
-          { status: <code>401</code>, code: "", when: "Not signed in." },
+          { status: <code>401</code>, code: "", when: <>Not signed in. A chat or a run sent with no credential at all, to an agent whose creator lets people pay from a wallet, is answered <code>402</code> <code>x402_payment_required</code> with the price instead: see <a href="#paid-wallet">pay from a wallet</a>. The access and results reads answer <code>401</code> as always.</> },
           { status: <code>402</code>, code: <code>insufficient_credits</code>, when: <>Not enough credits for this use. <code>priceCents</code> and <code>balanceCents</code> say how much. Nothing was charged.</> },
           { status: <code>402</code>, code: <code>subscription_lapsed</code>, when: "The subscription ended or its renewal did not go through." },
           { status: <code>402</code>, code: <code>plan_ended</code>, when: <>Your plan or your free trial is over and you have not agreed to the listing&apos;s price per use. <code>terms</code> says what the listing asks and <code>plans</code> the plans on offer: choose a plan or pay per use.</> },
@@ -2095,6 +2103,19 @@ x-wheelsai-plan-warning: 85`}
         limits above, the smallest price of one use (5 cents), and how many answers a day your organization gets on
         WheelsAI&apos;s models (<code>null</code> when it cannot be read). It also carries the numbers of a free
         trial: <code>maxTrialUses</code>, the most uses one can include, and <code>trialDays</code>, how long it lasts.
+      </p>
+
+      <h3 id="paid-wallet">Pay from a wallet</h3>
+      <p>
+        A creator can let people with no account pay each use of their agent from a Solana wallet, in USDC, with an x402
+        client: no sign-in and no key. A chat or a run sent with no credential at all is then answered <code>402</code>{" "}
+        <code>x402_payment_required</code>, with the price of one use in its <code>PAYMENT-REQUIRED</code> header and in{" "}
+        <code>priceCents</code> and <code>unit</code>. The client pays and sends the same request again with{" "}
+        <code>PAYMENT-SIGNATURE</code>. The answer is made and checked first; only then is the payment sent to Solana, and
+        the answer is released once it is confirmed, with <code>PAYMENT-RESPONSE</code> and{" "}
+        <code>x-wheelsai-charged-cents</code>. When there is no answer, the payment is never sent and nothing is charged.
+        A call with a session or a key is billed as above, whatever else it carries. The steps, the limits and the
+        refusals are in <Link href="/docs/api/inference#x402">paying an agent from a wallet, with x402</Link>.
       </p>
 
       <h2 id="playground">Playground</h2>

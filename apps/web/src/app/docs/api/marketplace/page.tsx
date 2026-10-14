@@ -120,6 +120,7 @@ export default function MarketplaceApiPage() {
             { name: "monthlyPriceCents", type: "integer", description: <>Required for <code>monthly</code>: 100 to 10,000,000.</> },
             { name: "sells", type: "enum", description: <><code>use</code> or <code>copies</code>. Left out, a new listing sells use of the agent and an update keeps what it sells. <code>copies</code> gives buyers their own copy, including its instructions, and you cannot take a copy back.</> },
             { name: "allowedTools", type: "string[]", description: <>Up to 50 tool names (such as <code>http_request</code>) that your agent may use for people who pay to use it. Each must be one of the agent&apos;s own tools. Left out, a paying user&apos;s requests run without tools that send requests out.</> },
+            { name: "x402Enabled", type: "boolean", description: <><code>true</code> lets people with no account pay each use from a Solana wallet, in USDC, with an x402 client (see <Link href="/docs/api/inference#x402">pay an agent from a wallet</Link>). Only on an agent&apos;s listing that sells use, <code>per_request</code>, at 5 cents or more, for an agent that answers when it is called. Left out, a new listing has it off.</> },
             { name: "publish", type: "boolean", description: <><code>true</code> publishes the listing in the same request.</> },
             { name: "longDescription", type: "string", description: "Up to 10,000 characters." },
             { name: "readme", type: "string", description: "Up to 50,000 characters." },
@@ -129,7 +130,8 @@ export default function MarketplaceApiPage() {
         />
         <p>
           Answers <code>201</code> with <code>&#123; listing &#125;</code>, which for you also carries{" "}
-          <code>allowedTools</code> and <code>orchestrationId</code> (<code>null</code> on an agent&apos;s listing). Free
+          <code>allowedTools</code>, <code>orchestrationId</code> (<code>null</code> on an agent&apos;s listing) and{" "}
+          <code>x402Enabled</code>. Free
           and tokenized listings ignore prices. Refusals carry a plain{" "}
           <code>message</code>; show it as it comes.
         </p>
@@ -162,6 +164,13 @@ export default function MarketplaceApiPage() {
             is priced per use (it can be free or monthly), and <code>allowedTools</code> naming a tool the agent does not
             have.
           </li>
+          <li>
+            <code>400</code> <code>validation_failed</code> on <code>x402Enabled</code>, when it is <code>true</code> and
+            cannot be on: &quot;Paying from a wallet is offered on an agent&apos;s listing only.&quot; (a workflow&apos;s
+            listing), &quot;Paying from a wallet is for an agent sold per use. Choose pay per use first.&quot; (free,
+            monthly, tokenized or copies), or &quot;Paying from a wallet is for an agent that answers when it is
+            called.&quot; (an agent that runs on its own). Nothing is saved.
+          </li>
         </ul>
         <p>
           Selling use turns the agent&apos;s page on for that listing: free use keeps the page open to anyone, and a price
@@ -173,8 +182,10 @@ export default function MarketplaceApiPage() {
         <p>
           <code>PATCH</code> accepts any create field except <code>agentId</code> and <code>orchestrationId</code>: a
           listing keeps what it sells. Pricing is re-validated as a whole.{" "}
-          <code>sells</code>, <code>allowedTools</code> and <code>publish</code> work the same on update, with the same
-          refusals. <code>POST /api/marketplace/listings/&#123;id&#125;/publish</code> makes a draft visible (a listing that is
+          <code>sells</code>, <code>allowedTools</code>, <code>x402Enabled</code> and <code>publish</code> work the same on
+          update, with the same refusals. <code>x402Enabled</code> <code>false</code> is always taken. A change that moves
+          the listing away from use per request (to free, monthly or tokenized pricing, or to selling copies) turns{" "}
+          <code>x402Enabled</code> off in the same write and refuses nothing; read it back from the answer. <code>POST /api/marketplace/listings/&#123;id&#125;/publish</code> makes a draft visible (a listing that is
           already published answers <code>200</code>) and{" "}
           <code>POST /api/marketplace/listings/&#123;id&#125;/archive</code> withdraws it. <code>GET /api/marketplace/my-listings</code>{" "}
           lists your organization&apos;s listings in every state; each carries <code>allowedTools</code> and{" "}
@@ -184,7 +195,11 @@ export default function MarketplaceApiPage() {
           that was first seen (an ISO date), or <code>null</code> when it has not been noted yet. See{" "}
           <Link href="/docs/guides/marketplace#model-stops">When the model stops</Link>. Each also carries{" "}
           <code>plans</code>, the plans it has on offer as <a href="#plans">the route below</a> answers them, its free
-          trial first when it offers one. Each also carries <code>productKind</code> and <code>orchestrationId</code>.
+          trial first when it offers one. Each also carries <code>productKind</code> and <code>orchestrationId</code>, and{" "}
+          <code>x402Enabled</code>, which only your own reads say. The switch is saved
+          whatever the platform offers; whether paying from a wallet is open right now is{" "}
+          <code>x402.available</code> in <code>GET /api/capabilities</code>, and whether one agent takes it is the{" "}
+          <code>x402</code> of its API data, <code>GET /api/a/&#123;handle&#125;/api</code>.
         </p>
       </Endpoint>
 
@@ -676,7 +691,10 @@ export default function MarketplaceApiPage() {
           <code>jobId</code> and <code>escrow</code> (<code>held</code>, <code>released</code> or <code>refunded</code>);
           only a released row is an earning, and <code>heldInEscrow</code> totals what buyers have paid that is not yours
           yet. <code>unlistedJobRevenue</code> is settled job revenue on products with no listing. Your share is 90% of what buyers paid; each revenue row
-          splits the gross exactly into the creator share and the 10% platform fee, in whole cents.
+          splits the gross exactly into the creator share and the 10% platform fee, in whole cents. A use paid from a
+          Solana wallet at an agent&apos;s <Link href="/docs/api/inference#x402">x402 door</Link> is a row of{" "}
+          <code>type</code> <code>x402</code>, with no licence behind it (<code>licenceKind</code> <code>null</code>); no
+          row says the paying wallet.
         </p>
         <p>
           <code>payoutLimits</code> says what a payout request may ask for right now. Read the minimum and the limits

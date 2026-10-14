@@ -16,6 +16,7 @@ const toc = [
   { id: "who-can-use", title: "Who can use it?", sub: true },
   { id: "plans", title: "Plans", sub: true },
   { id: "free-trial", title: "A free trial", sub: true },
+  { id: "wallet", title: "Paid from a wallet", sub: true },
   { id: "earn", title: "What you earn", sub: true },
   { id: "guaranteed", title: "Guaranteed delivery", sub: true },
   { id: "model-stops", title: "When the model stops", sub: true },
@@ -87,7 +88,8 @@ export default function MarketplaceGuidePage() {
       <p>
         An agent you talk to is sold free, per message or by the month. A task agent is sold free, per run or by the month.
         An agent that runs on its own is sold free or by the month. People sign in to pay, and they pay from WheelsAI
-        credits. Setting a price turns off free use on the agent&apos;s page.
+        credits, unless you also let them <a href="#wallet">pay from a wallet</a>. Setting a price turns off free use on
+        the agent&apos;s page.
       </p>
       <p>
         Your agent cannot save files for people who pay, and cannot send requests to other websites unless you allow it
@@ -182,6 +184,24 @@ export default function MarketplaceGuidePage() {
       <p>
         Over the API, the trial is one more entry of the set sent to{" "}
         <Link href="/docs/api/marketplace#free-trial"><code>PUT /api/marketplace/listings/&#123;id&#125;/plans</code></Link>.
+      </p>
+
+      <h3 id="wallet">Paid from a wallet</h3>
+      <p>
+        An agent you talk to, or a task agent, sold with <strong>Pay per use</strong> can also be paid for by people with
+        no account. Turn on <strong>Let people with no account pay from a Solana wallet</strong> on the Sell tab, under
+        pay per use; the switch is there whenever WheelsAI offers paying from a wallet. Each use then costs your price per
+        use in USDC, paid from the caller&apos;s own wallet with an x402 client: no account and no key. The request is
+        answered first; the payment is sent only then, and the answer is released when Solana confirms it. When there is
+        no answer, nothing is sent and nothing is charged. An answer paid this way must be ready within 30 seconds, or it
+        is stopped and nothing is charged.
+      </p>
+      <p>
+        You earn 90% of each use, as with any sale. The sale reads <strong>Paid from a wallet</strong> under{" "}
+        <strong>Earnings</strong>, never with the paying wallet&apos;s address. Choosing free, monthly, a token or copies turns
+        the switch off; choose pay per use again and turn it back on. Callers find how to pay on the agent&apos;s API page,{" "}
+        <code>/a/&#123;handle&#125;/api</code>, and in{" "}
+        <Link href="/docs/api/inference#x402">pay an agent from a wallet, with x402</Link>.
       </p>
 
       <h3 id="earn">What you earn</h3>
@@ -438,8 +458,8 @@ curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/publish"
       <ul>
         <li>a published marketplace listing,</li>
         <li>
-          a reputation score of at least 50, built from attested usage (settled x402 payments lower the bar by one point each,
-          up to 25 points),
+          a reputation score of at least 50, built from attested usage (settled payments to the agent&apos;s deployments from
+          a Solana wallet, request by request, lower the bar by one point each, up to 25 points),
         </li>
         <li>at least 7 days since the agent was first deployed,</li>
         <li>a creator wallet address, and no existing token.</li>

@@ -9,7 +9,7 @@ import { Callout, DocTable } from "@/components/marketing/prose";
 export const metadata: Metadata = {
   title: "Chat completions (/v1)",
   description:
-    "The OpenAI-compatible WheelsAI API: one base URL for agents and model deployments (POST /v1/chat/completions routed on model), POST /v1/{deploymentSlug}/chat/completions, request fields, max_tokens cap, how requests to a dedicated deployment are covered by its per-second GPU billing, errors and the x402 pay-per-request flow.",
+    "The OpenAI-compatible WheelsAI API: one base URL for agents and model deployments (POST /v1/chat/completions routed on model), POST /v1/{deploymentSlug}/chat/completions, request fields, max_tokens cap, how requests to a dedicated deployment are covered by its per-second GPU billing, errors, paying an agent's use from a Solana wallet with x402, and paying a deployment per request from a wallet.",
 };
 
 const toc = [
@@ -21,7 +21,14 @@ const toc = [
   { id: "pricing", title: "Per-request token pricing" },
   { id: "errors", title: "Errors" },
   { id: "list-models", title: "List your models" },
-  { id: "x402", title: "Paying per request with x402" },
+  { id: "x402", title: "Pay an agent from a wallet, with x402" },
+  { id: "x402-challenge", title: "The price", sub: true },
+  { id: "x402-pay", title: "Pay", sub: true },
+  { id: "x402-answer", title: "The answer", sub: true },
+  { id: "x402-money", title: "Where the payment goes", sub: true },
+  { id: "x402-limits", title: "Limits", sub: true },
+  { id: "x402-refusals", title: "Refusals", sub: true },
+  { id: "deployment-wallet", title: "Pay a deployment per request from a wallet" },
 ];
 
 export default function InferenceApiPage() {
@@ -54,7 +61,8 @@ export default function InferenceApiPage() {
           </li>
           <li>
             <code>a/&lt;handle&gt;</code>: an agent another organization sells that you pay to use; see{" "}
-            <Link href="/docs/api/agents#paid-v1">an agent you pay for</Link>.
+            <Link href="/docs/api/agents#paid-v1">an agent you pay for</Link>. Where its creator allows it, it can also
+            be called with no key and each use paid from a Solana wallet; see <a href="#x402">x402</a>.
           </li>
           <li>
             <code>w/&lt;slug&gt;</code>: a workflow another organization sells that you pay to run, by the slug of its
@@ -280,7 +288,7 @@ for await (const chunk of stream) {
       <ul>
         <li>takes no hold from your credit balance and is not charged per token;</li>
         <li>writes no ledger row of its own (the GPU time appears as <code>gpu_usage</code> rows for the deployment);</li>
-        <li>is not checked against your credit balance and is never answered with an x402 payment challenge.</li>
+        <li>is not checked against your credit balance and is never asked for a payment from a wallet.</li>
       </ul>
       <p>
         Token counts are still returned in <code>usage</code> and recorded in the deployment&apos;s metrics, streamed or not.
@@ -302,7 +310,7 @@ for await (const chunk of stream) {
       <Callout variant="warning" title="Does not apply to dedicated deployments">
         <p>
           Every deployment you create runs on dedicated GPUs and is billed per second of GPU time, so the per-token prices and
-          the x402 flow on this page are not charged for it. They apply only to a deployment that is billed per request instead
+          the payment from a wallet on this page are not charged for it. They apply only to a deployment that is billed per request instead
           of per GPU-second.
         </p>
       </Callout>
@@ -363,20 +371,21 @@ for await (const chunk of stream) {
               <>
                 Not enough credits: <code>insufficient_credits</code>, with <code>requiredCents</code> inside the error
                 object. For a dedicated deployment this means its GPU time has gone unpaid and your balance does not cover it; a
-                single request is never the reason. For a deployment billed per request it is the request&apos;s own cost, or an
-                x402 payment challenge (below).
+                single request is never the reason. For a deployment billed per request it is the request&apos;s own cost, or a
+                request for <a href="#deployment-wallet">a payment from a wallet</a>. An agent called with no key at its{" "}
+                <a href="#x402">x402 door</a> answers <code>402</code> with its own codes, listed there.
               </>
             ),
           },
           { status: <code>404</code>, when: <>No deployment with that slug in your organization, or it is stopped or failed (<code>model_not_found</code>).</> },
-          { status: <code>409</code>, when: <>The x402 payment transaction was already used for another request (<code>payment_already_used</code>). Sent with <code>x-should-retry: false</code>, so OpenAI SDKs do not retry it.</> },
+          { status: <code>409</code>, when: <>The wallet payment transaction was already used for another request (<code>payment_already_used</code>). Sent with <code>x-should-retry: false</code>, so OpenAI SDKs do not retry it.</> },
           { status: <code>429</code>, when: <>Monthly API calls used up (<code>plan_limit_reached</code>), a rate limit, or the model server is at capacity (<code>provider_rate_limited</code>, with its <code>retry-after</code>).</> },
           {
             status: <code>502</code>,
-            when: "The GPU node could not be reached, answered with a redirect, refused the request with 401, 403 or 404, answered a streaming request without a stream, or answered 200 with a body that is not a completion. Nothing is charged for the request, and a request paid with x402 has its payment returned to your credit balance.",
+            when: "The GPU node could not be reached, answered with a redirect, refused the request with 401, 403 or 404, answered a streaming request without a stream, or answered 200 with a body that is not a completion. Nothing is charged for the request, and a request to a deployment paid from a wallet has its payment returned to your credit balance.",
           },
           { status: <code>504</code>, when: <>The model server did not start answering, or stopped sending, within the timeout (<code>upstream_timeout</code>).</> },
-          { status: <>other <code>5xx</code></>, when: "The model server's own status. Nothing is charged for the request, and a request paid with x402 has its payment returned to your credit balance." },
+          { status: <>other <code>5xx</code></>, when: "The model server's own status. Nothing is charged for the request, and a request to a deployment paid from a wallet has its payment returned to your credit balance." },
           {
             status: <code>503</code>,
             when: (
@@ -418,13 +427,293 @@ for await (const chunk of stream) {
         />
       </Endpoint>
 
-      <h2 id="x402">Paying per request with x402</h2>
+      <h2 id="x402">Pay an agent from a wallet, with x402</h2>
       <p>
-        A dedicated deployment is never challenged for an x402 payment: its requests are already paid for by its GPU time (see{" "}
-        <a href="#billing">How a request is billed</a>). For a deployment billed per request, <code>/v1</code> requests can be
-        paid individually with a Solana payment, following the HTTP 402 pattern. x402 works in one of two modes:{" "}
+        An agent whose creator allows it can be called with no account and no key, and each use paid in USDC from a
+        Solana wallet. The agent speaks the published x402 format, version 2, with the Solana <code>exact</code> scheme,
+        so an x402 client for Solana can pay it. It works on the agent&apos;s three use addresses:
+      </p>
+      <ul>
+        <li>
+          <code>POST /api/a/&#123;handle&#125;/chat</code>: one message (see{" "}
+          <Link href="/docs/api/agents#paid-chat">chat with an agent you pay for</Link>);
+        </li>
+        <li>
+          <code>POST /api/a/&#123;handle&#125;/run</code>: one run of a task agent (see{" "}
+          <Link href="/docs/api/agents#paid-run">run a task you pay for</Link>);
+        </li>
+        <li>
+          <code>POST /v1/chat/completions</code> with <code>model</code> <code>a/&lt;handle&gt;</code>: one message.
+        </li>
+      </ul>
+      <p>
+        A call is paid from a wallet only when it carries no credential at all: no <code>Authorization</code> header, not
+        even an empty one, and no session cookie. A call with an API key or a session is billed to your organization as
+        always, and a <code>PAYMENT-SIGNATURE</code> sent beside it is ignored. An agent takes payments from a wallet while
+        WheelsAI offers paying from a wallet (<code>x402.available</code> in <code>GET /api/capabilities</code>) and its
+        creator has turned them on for a published listing sold per use, its page is public, and it answers when it is
+        called (a chat or a task agent). Any other agent answers a call with no key with <code>401</code>, as it always did. The
+        agent&apos;s API data, <code>GET /api/a/&#123;handle&#125;/api</code> (no sign-in), carries <code>x402</code> while
+        it takes them: <code>&#123; priceCents, unit, network, asset, answerWithinSeconds, limits &#125;</code>, and{" "}
+        <code>null</code> otherwise. Pay from your server or a script: a page in a browser on another website cannot read
+        the <code>PAYMENT-REQUIRED</code> and <code>PAYMENT-RESPONSE</code> headers.
+      </p>
+
+      <h3 id="x402-challenge">1. The price</h3>
+      <p>
+        Send the call with no key. The body is the address&apos;s own (for chat,{" "}
+        <code>&#123; messages, stream &#125;</code>) and is checked first: a body the address does not take is{" "}
+        <code>400</code>, before any price is asked. Then the answer is <code>402</code> with a{" "}
+        <code>PAYMENT-REQUIRED</code> header, the base64 of this JSON:
+      </p>
+      <CodeBlock
+        language="bash"
+        code={`curl -i "$WHEELSAI_API_URL/api/a/support-bot/chat" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "messages": [{ "role": "user", "content": "How long do refunds take?" }], "stream": false }'`}
+      />
+      <CodeBlock
+        language="json"
+        code={`{
+  "x402Version": 2,
+  "resource": {
+    "url": "<the address you called>",
+    "description": "<the listing's short description>",
+    "mimeType": "application/json"
+  },
+  "accepts": [
+    {
+      "scheme": "exact",
+      "network": "<the network, as CAIP-2>",
+      "amount": "50000",
+      "asset": "<the USDC mint of that network>",
+      "payTo": "<WheelsAI's treasury wallet>",
+      "maxTimeoutSeconds": 180,
+      "extra": {
+        "feePayer": "<WheelsAI's fee payer>",
+        "memo": "<24 characters>"
+      }
+    }
+  ]
+}`}
+      />
+      <DocTable
+        caption="What one use asks for"
+        columns={[
+          { key: "field", label: "Field" },
+          { key: "means", label: "What it means" },
+        ]}
+        rows={[
+          {
+            field: <code>network</code>,
+            means: (
+              <>
+                The Solana network the API runs on, named as CAIP-2: <code>solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp</code>{" "}
+                for mainnet, <code>solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1</code> for devnet.
+              </>
+            ),
+          },
+          {
+            field: <code>amount</code>,
+            means: "The price of one use in USDC atomic units (6 decimals): the listing's price in cents times 10,000, so 50000 is $0.05.",
+          },
+          {
+            field: <code>asset</code>,
+            means: (
+              <>
+                The USDC mint of that network: <code>EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v</code> on mainnet,{" "}
+                <code>4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU</code> on devnet.
+              </>
+            ),
+          },
+          {
+            field: <code>payTo</code>,
+            means: "The wallet paid. The transfer goes to its USDC account, the associated token account of this wallet and the mint.",
+          },
+          { field: <code>maxTimeoutSeconds</code>, means: "180: the longest one whole call can take, payment included." },
+          {
+            field: <code>extra.feePayer</code>,
+            means: "The wallet that pays the network fee and signs last. Your wallet pays no fee and needs no SOL.",
+          },
+          {
+            field: <code>extra.memo</code>,
+            means: "The text your payment must carry as its one memo. It ties the payment to this agent and this price.",
+          },
+        ]}
+      />
+      <p>
+        The body says the same in words. On <code>/api/a</code>:
+      </p>
+      <CodeBlock
+        language="json"
+        code={`{
+  "error": "x402_payment_required",
+  "message": "Pay $0.05 in USDC from a Solana wallet for one message, as the PAYMENT-REQUIRED header of this answer says, or send an API key.",
+  "priceCents": 5,
+  "unit": "message"
+}`}
+      />
+      <p>
+        <code>unit</code> is <code>message</code> or <code>run</code>. On <code>/v1</code> the body is OpenAI&apos;s error,
+        with <code>code</code> <code>x402_payment_required</code>, <code>type</code> <code>payment_required</code>, and{" "}
+        <code>priceCents</code> and <code>unit</code> on the error object. It carries <code>x-should-retry: false</code>,
+        so an OpenAI client hands it to you instead of sending the call again.
+      </p>
+
+      <h3 id="x402-pay">2. Pay</h3>
+      <p>
+        Your x402 client builds one Solana transaction from <code>accepts[0]</code> and signs it with your wallet only:
+      </p>
+      <ul>
+        <li>
+          Its fee payer is <code>extra.feePayer</code>, whose signature is left empty: WheelsAI adds it, and only after the
+          answer is ready.
+        </li>
+        <li>
+          Its instructions, in this order: set the compute unit limit (at most 200,000); set the compute unit price (at
+          most 50,000 microlamports a unit); one <code>TransferChecked</code> of the SPL Token program (not Token-2022), of exactly{" "}
+          <code>amount</code> with 6 decimals, from your USDC account to <code>payTo</code>&apos;s USDC account, signed by
+          your wallet as its owner; and one memo whose text is exactly <code>extra.memo</code>. A wallet may add its own
+          Lighthouse instructions after the memo; six instructions at most, and nothing else.
+        </li>
+        <li>
+          Legacy or version 0, with no address lookup tables. The fee payer is in none of its instructions.
+        </li>
+        <li>Your wallet needs a USDC account holding at least the amount. It needs no SOL.</li>
+      </ul>
+      <p>
+        The client then sends the same request again, with the payment in a <code>PAYMENT-SIGNATURE</code> header: the
+        base64 of <code>&#123; &quot;x402Version&quot;: 2, &quot;accepted&quot;: &lt;accepts[0] as it came&gt;,
+        &quot;payload&quot;: &#123; &quot;transaction&quot;: &lt;the base64 transaction&gt; &#125; &#125;</code>. A
+        header that cannot be read, or of another version, is no payment: the answer is a fresh <code>402</code> whose{" "}
+        <code>error</code> is <code>invalid_payload</code> or <code>invalid_x402_version</code>.
+      </p>
+      <CodeBlock
+        language="bash"
+        code={`curl -i "$WHEELSAI_API_URL/api/a/support-bot/chat" \\
+  -H "Content-Type: application/json" \\
+  -H "PAYMENT-SIGNATURE: <the payment your x402 client made>" \\
+  -d '{ "messages": [{ "role": "user", "content": "How long do refunds take?" }], "stream": false }'`}
+      />
+
+      <h3 id="x402-answer">3. The answer</h3>
+      <p>The order is what keeps your payment safe:</p>
+      <ol>
+        <li>
+          The payment is checked before the agent runs: it asks for what this agent asks now (a price changed since the{" "}
+          <code>402</code> is refused), the transaction is built as above, and it would go through on Solana.
+        </li>
+        <li>The agent makes its answer, and the answer is checked whole. Nothing of it is sent yet.</li>
+        <li>Only then does WheelsAI sign as the fee payer and send your payment to Solana.</li>
+        <li>
+          The answer is released once Solana confirms the payment: <code>200</code>, with a <code>PAYMENT-RESPONSE</code>{" "}
+          header and <code>x-wheelsai-charged-cents</code>.
+        </li>
+      </ol>
+      <p>
+        When there is no answer, the payment is never sent and nothing is charged. An answer paid this way must be ready
+        within 30 seconds of the call, or it is stopped and nothing is sent. Allow up to 3 minutes for the whole call while
+        the payment is confirmed; a confirmation usually comes within seconds.
+      </p>
+      <CodeBlock
+        language="http"
+        code={`HTTP/1.1 200 OK
+content-type: application/json; charset=utf-8
+PAYMENT-RESPONSE: <base64>
+x-wheelsai-charged-cents: 5
+
+{
+  "message": { "role": "assistant", "content": "Refunds take 3 to 5 business days." },
+  "toolCalls": [],
+  "billing": { "chargedCents": 5, "balanceCents": null, "access": "listing_pricing" }
+}`}
+      />
+      <p>
+        <code>PAYMENT-RESPONSE</code> is the base64 of{" "}
+        <code>&#123; &quot;success&quot;: true, &quot;payer&quot;, &quot;transaction&quot;, &quot;network&quot;, &quot;amount&quot; &#125;</code>:
+        your wallet, the transaction&apos;s signature, the network as CAIP-2 and the atomic units paid.{" "}
+        <code>billing.balanceCents</code> is <code>null</code>: there is no balance, the payment is the charge. A chat on{" "}
+        <code>/api/a</code> answers as a stream unless <code>stream</code> is <code>false</code>, as for a buyer; on{" "}
+        <code>/v1</code> it answers whole unless <code>stream</code> is <code>true</code>, with{" "}
+        <code>wheelsai.billing</code> beside OpenAI&apos;s fields. Either way the headers come before the first byte.
+      </p>
+      <p>
+        One payment pays for one use. The same <code>PAYMENT-SIGNATURE</code> sent again is refused as presented once, and
+        the agent does not run again.
+      </p>
+
+      <h3 id="x402-money">Where the payment goes</h3>
+      <p>
+        The payment goes to WheelsAI&apos;s treasury, and WheelsAI pays the network fee. The agent&apos;s creator earns
+        90% of each use, as with any sale. It appears in the creator&apos;s earnings as <strong>Paid from a wallet</strong>,
+        never with your wallet&apos;s address.
+      </p>
+
+      <h3 id="x402-limits">Limits</h3>
+      <ul>
+        <li>Each address can call one agent 10 times a minute, counted on every call, the first one included.</li>
+        <li>Each wallet can pay for 10 uses a minute and 200 a day of one agent; each address, for 200 uses a day.</li>
+        <li>One payment from a wallet at a time: while one is going through, the next is refused until it is answered.</li>
+        <li>
+          After 3 answers in a day made for payments from a wallet, or from an address, that then did not go through, that
+          wallet or address is refused until tomorrow.
+        </li>
+      </ul>
+
+      <h3 id="x402-refusals">Refusals</h3>
+      <p>
+        On <code>/api/a</code> a refusal is <code>&#123; error, message &#125;</code> with <code>priceCents</code> and{" "}
+        <code>unit</code> where a payment is asked for, <code>retryAfterSeconds</code> with <code>retry-after</code> on a
+        limit, and <code>transaction</code> where a payment was sent. On <code>/v1</code> it is OpenAI&apos;s error, with
+        the code below and <code>reason</code> carrying the code of the first column where <code>/v1</code> folds several
+        into one. Every <code>402</code> of a use paid from a wallet carries <code>x-should-retry: false</code> on{" "}
+        <code>/v1</code>. Once your payment is taken up for its answer, after its checks, the limits and a read of Solana,
+        every refusal on <code>/v1</code> carries <code>x-should-retry: false</code>: the same payment sent again would only
+        be refused as presented once.
+      </p>
+      <DocTable
+        caption="Refusals of a use paid from a wallet"
+        columns={[
+          { key: "status", label: "Status" },
+          { key: "code", label: "error (/api/a)" },
+          { key: "v1", label: "error.code (/v1)" },
+          { key: "when", label: "When" },
+        ]}
+        rows={[
+          { status: <code>400</code>, code: <code>invalid_request</code>, v1: <><code>validation_failed</code>, <code>unsupported_parameter</code></>, when: "The body is not what the address takes. Checked before the price is asked." },
+          { status: <code>409</code>, code: <code>not_a_task_agent</code>, v1: "", when: "The run address, on an agent that is not a task agent." },
+          { status: <code>413</code>, code: <code>input_too_large</code>, v1: "", when: "The answers of a run are too long." },
+          { status: <code>422</code>, code: <code>input_invalid</code>, v1: "", when: <>Some answers of a run need another look; <code>details</code> lists them.</> },
+          { status: <code>401</code>, code: "", v1: <code>invalid_api_key</code>, when: "The agent does not take payments from a wallet: the answer of any call with no key." },
+          { status: <code>402</code>, code: <code>x402_payment_required</code>, v1: <code>x402_payment_required</code>, when: <>No payment, or one that could not be read. <code>PAYMENT-REQUIRED</code> says what to pay.</> },
+          { status: <code>402</code>, code: <code>x402_payment_invalid</code>, v1: <code>x402_payment_required</code>, when: <>The payment cannot be accepted. Either it does not match what was asked or it would not go through (for example too little USDC), so it was not sent and nothing was charged. Or it was presented before: a payment pays for one answer only, so it was not sent again. A fresh <code>PAYMENT-REQUIRED</code> says why in its <code>error</code>, in the published words, such as <code>invalid_exact_svm_payload_amount_mismatch</code>, <code>transaction_simulation_failed</code> or <code>duplicate_settlement</code>.</> },
+          { status: <code>402</code>, code: <code>x402_payment_failed</code>, v1: <code>x402_payment_required</code>, when: <>The payment expired before it could go through, or Solana refused it, so the answer was not released. Nothing was taken from your wallet. <code>PAYMENT-RESPONSE</code> says <code>success</code> <code>false</code> with <code>errorReason</code> <code>transaction_failed</code>. Pay again with a new transaction.</> },
+          { status: <code>429</code>, code: <code>rate_limited</code>, v1: <code>rate_limit_exceeded</code>, when: <>A limit above, or a payment from this wallet still going through. Nothing was sent; <code>retry-after</code> says how long to wait.</> },
+          { status: <code>429</code>, code: <code>x402_too_many_unpaid</code>, v1: <code>rate_limit_exceeded</code>, when: "Too many answers today for payments from this wallet or address that did not go through. Try again tomorrow." },
+          { status: <code>499</code>, code: <code>client_closed_request</code>, v1: <code>client_closed_request</code>, when: "You closed the call before the answer was ready. Your payment was not sent." },
+          { status: <code>502</code>, code: <><code>model_error</code>, <code>answer_withheld</code></>, v1: <><code>upstream_error</code>, <code>answer_withheld</code></>, when: "The agent could not answer, or its answer could not be released. Your payment was not sent and nothing was charged." },
+          { status: <code>502</code>, code: <code>x402_payment_unserved</code>, v1: <code>x402_payment_unserved</code>, when: <>Your payment went through but the answer could not be released. <code>transaction</code> names the payment.</> },
+          { status: <code>503</code>, code: <><code>x402_unavailable</code>, <code>agent_paused</code>, <code>rate_limiter_unavailable</code></>, v1: <code>service_unavailable</code>, when: "Paying from a wallet is not available right now, the agent is paused, or calls cannot be counted. Nothing was sent and nothing was charged." },
+          { status: <code>504</code>, code: <code>answer_timed_out</code>, v1: <code>upstream_timeout</code>, when: "The answer was not ready within 30 seconds, so it was stopped. Your payment was not sent and nothing was charged." },
+          { status: <code>504</code>, code: <code>x402_payment_unconfirmed</code>, v1: <code>x402_payment_unconfirmed</code>, when: <>Your payment was sent but could not be confirmed in time, so the answer was not released. <code>transaction</code> names the payment: look it up on Solana before you pay again.</> },
+        ]}
+      />
+      <p>
+        From code, an x402 client library for Solana does steps 1 and 2 for you; give it the wallet that pays. Before you
+        start, read the agent&apos;s API page at <code>/a/&#123;handle&#125;/api</code>: it shows the first call with no key,
+        filled in for that agent, while the agent takes payments from a wallet.
+      </p>
+
+      <h2 id="deployment-wallet">Pay a deployment per request from a wallet</h2>
+      <p>
+        A dedicated deployment is never asked for a payment from a wallet: its requests are already paid for by its GPU time
+        (see <a href="#billing">How a request is billed</a>). For a deployment billed per request, <code>/v1</code> requests
+        can be paid one at a time with a Solana payment, following the HTTP 402 pattern, in WheelsAI&apos;s own headers{" "}
+        <code>X-Payment-Required</code> and <code>X-Payment</code>. This is not the published x402 format of{" "}
+        <a href="#x402">an agent&apos;s door</a>: an x402 client does not pay it. It works in one of two modes:{" "}
         <strong>fallback</strong> (use credits when the balance covers the request, otherwise ask for payment) or{" "}
-        <strong>required</strong> (every request is paid). When x402 is not available, requests use credits only. You still authenticate as usual; x402 replaces the credit charge, not the API key.
+        <strong>required</strong> (every request is paid). When it is not on, requests use credits only. You still
+        authenticate as usual; the payment replaces the credit charge, not the API key.
       </p>
       <p>
         <strong>1. The challenge.</strong> A request that needs payment answers <code>402</code> with an{" "}
@@ -434,7 +723,7 @@ for await (const chunk of stream) {
         language="json"
         code={`{
   "error": {
-    "message": "This request requires payment via X-402 protocol",
+    "message": "This request needs a payment from a Solana wallet. The X-Payment-Required header says how much and where to send it.",
     "type": "payment_required",
     "param": null,
     "code": "x402_payment_required"
@@ -604,8 +893,11 @@ for await (const chunk of stream) {
       </p>
       <Callout>
         <p>
-          x402 payments go to the platform treasury. To earn from your own agent per request, list it on the marketplace with{" "}
-          <Link href="/docs/guides/marketplace#per-request">per-request pricing</Link>.
+          A payment for a deployment&apos;s request goes to WheelsAI&apos;s treasury and pays for that request in place of
+          credits: it is nobody&apos;s earnings. A use of an agent paid at its <a href="#x402">x402 door</a> goes to the
+          treasury too, and its creator earns 90% of it. To earn from your own agent per request, list it on the marketplace
+          with <Link href="/docs/guides/marketplace#per-request">per-request pricing</Link>, and let people with no account
+          pay each use from a wallet.
         </p>
       </Callout>
     </DocPage>

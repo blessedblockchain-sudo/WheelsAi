@@ -324,6 +324,33 @@ print(result["output"])`;
   return { endpointUrl, curl, javascript, python };
 }
 
+export interface X402ChallengeSnippetInput {
+  /** The full address the request is posted to: the one the key's snippets call. */
+  endpointUrl: string;
+  /** The JSON body, the one the key's snippets send. */
+  body: Record<string, unknown>;
+}
+
+/**
+ * The first call of a use paid from a Solana wallet, with no key: a curl
+ * with no Authorization header that prints the answer's headers (-i), so the
+ * 402 and its PAYMENT-REQUIRED header show. Paying and sending the same
+ * request again with PAYMENT-SIGNATURE is the work of an x402 client
+ * library: a payment is never signed by hand in a snippet.
+ *
+ * The body is written as JSON a terminal takes: ASCII only, and a single
+ * quote closed and reopened around, so the shell's quoting holds.
+ */
+export function x402ChallengeSnippet(input: X402ChallengeSnippetInput): string {
+  const json = JSON.stringify(input.body, null, 2)
+    .replace(/[^\x20-\x7e\n]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`)
+    .replace(/'/g, "'\\''")
+    .replace(/\n/g, "\n  ");
+  return `curl -i ${input.endpointUrl} \\
+  -H "Content-Type: application/json" \\
+  -d '${json}'`;
+}
+
 export interface WorkflowSnippetInput {
   /** `Orchestration.apiEndpoint` as the API returned it; null when PUBLIC_API_URL is unset. */
   apiEndpoint: string | null;

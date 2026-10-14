@@ -3,12 +3,17 @@
  *   cd apps/web && npx tsx --test src/lib/api-page.unit.test.ts
  */
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import type { AgentApiPage, MarketplaceListing, PublicAgentDetail, WorkflowApiPage } from "./api";
 import {
   API_PAGE_HEADINGS,
+  API_PAGE_WALLET_WORDS,
   API_PAGE_WORDS,
+  WALLET_CALL_MINUTES,
   WORKFLOW_API_PAGE_WORDS,
   apiPageHrefOfAgent,
   apiPageHrefOfListing,
@@ -22,11 +27,15 @@ import {
   isApiPageFor,
   isWorkflowApiPage,
   limitLines,
+  walletChallengeLine,
+  walletDeadlineLine,
+  walletLimitLine,
   workflowApiPagePath,
   workflowLimitLines,
 } from "./api-page";
 import { SPEND_SCOPES } from "./jobs";
 import { PAID_USE_MESSAGES } from "./paid-use";
+import { paidAgentChatSnippets, paidAgentRunSnippets } from "./public-urls";
 import { planAfterLine, planPriceLine, planUsesLine } from "./use-plans";
 
 const STARTER = { id: "p1", name: "Starter", priceCents: 900, includedUses: 500, extraUsePriceCents: 4 };
@@ -141,6 +150,7 @@ function sentencesOf(page: AgentApiPage): string[] {
     v.keyScope,
     v.startFirst,
     v.createKeyLabel,
+    ...(v.wallet?.lines ?? []),
   ];
 }
 
@@ -612,4 +622,189 @@ test("a workflow's API page with nothing to call, or not whole, is not drawn", (
   assert.equal(isApiPageFor("workflow", chatPage()), false);
   assert.equal(isApiPageFor("agent", chatPage()), true);
   assert.equal(isApiPageFor("agent", workflowPage()), false);
+});
+
+// ============================================
+// Paying one use from a wallet, with no key
+// ============================================
+
+const DEVNET = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
+const DEVNET_USDC = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
+
+/** The x402 block of a listing the door serves, as GET /api/a/:handle/api answers it (apps/api/src/services/agentApiPage.ts). */
+function walletBlock(over: Partial<NonNullable<AgentApiPage["x402"]>> = {}): NonNullable<AgentApiPage["x402"]> {
+  return {
+    priceCents: 5,
+    unit: "message",
+    network: DEVNET,
+    asset: DEVNET_USDC,
+    answerWithinSeconds: 30,
+    limits: { walletPerMinute: 10, walletPerDay: 200, addressPerMinute: 10 },
+    ...over,
+  };
+}
+
+/** The JSON a curl sends: what stands between -d ' and the closing '. */
+function curlJson(curl: string): unknown {
+  const found = /-d '([\s\S]*)'$/.exec(curl);
+  assert.ok(found, curl);
+  return JSON.parse(found[1] ?? "");
+}
+
+test("the heading and the sentences of paying from a wallet are the lead's", () => {
+  assert.equal(API_PAGE_HEADINGS.wallet, "Pay from a wallet, with no key");
+  assert.equal(API_PAGE_WALLET_WORDS.noKey, "No key is needed: pay each use in USDC from a Solana wallet with an x402 client.");
+  assert.equal(
+    API_PAGE_WALLET_WORDS.order,
+    "The answer is made and checked first. Only then is the payment sent to Solana, and the answer is released once it is confirmed, with PAYMENT-RESPONSE.",
+  );
+  assert.equal(API_PAGE_WALLET_WORDS.noAnswer, "When there is no answer, the payment is never sent and nothing is charged.");
+  assert.equal(
+    walletChallengeLine("message", 5),
+    "A call with no key is answered 402 with the price of one message, $0.05 in USDC, in its PAYMENT-REQUIRED header. Your client pays and sends the same request again with PAYMENT-SIGNATURE.",
+  );
+  assert.equal(
+    walletChallengeLine("run", 125),
+    "A call with no key is answered 402 with the price of one run, $1.25 in USDC, in its PAYMENT-REQUIRED header. Your client pays and sends the same request again with PAYMENT-SIGNATURE.",
+  );
+  assert.equal(
+    walletDeadlineLine(30),
+    "An answer paid this way must be ready within 30 seconds. Allow up to 3 minutes for the whole call while the payment is confirmed.",
+  );
+  assert.equal(
+    walletLimitLine({ walletPerMinute: 10, walletPerDay: 200, addressPerMinute: 10 }),
+    "Each wallet can pay for 10 uses a minute here and 200 a day. Each address can call 10 times a minute here.",
+  );
+});
+
+test("the numbers of the wallet's lines are the API's, and one it did not send is not said", () => {
+  assert.equal(walletDeadlineLine(45), "An answer paid this way must be ready within 45 seconds. Allow up to 3 minutes for the whole call while the payment is confirmed.");
+  assert.equal(walletDeadlineLine(1), "An answer paid this way must be ready within 1 second. Allow up to 3 minutes for the whole call while the payment is confirmed.");
+  assert.equal(
+    walletLimitLine({ walletPerMinute: 1, walletPerDay: 7, addressPerMinute: 1 }),
+    "Each wallet can pay for 1 use a minute here and 7 a day. Each address can call 1 time a minute here.",
+  );
+  assert.equal(walletLimitLine({ walletPerMinute: 10, walletPerDay: 200 }), "Each wallet can pay for 10 uses a minute here and 200 a day.");
+  // Half of the wallet's pair is not said alone.
+  assert.equal(walletLimitLine({ walletPerMinute: 10, addressPerMinute: 4 }), "Each address can call 4 times a minute here.");
+  assert.equal(walletLimitLine({ walletPerMinute: 0, walletPerDay: Number.NaN, addressPerMinute: "10" }), null);
+  assert.equal(walletLimitLine(null), null);
+});
+
+test("the whole call is allowed the time the API gives a payment, written once and held to the API's constant", () => {
+  const rules = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "api", "src", "services", "x402DoorRules.ts"),
+    "utf8",
+  );
+  const found = /export const X402_MAX_TIMEOUT_SECONDS = (\d+);/.exec(rules);
+  assert.ok(found, "the API names how long a payment may wait");
+  assert.equal(WALLET_CALL_MINUTES * 60, Number(found[1]));
+});
+
+test("a conversation the door serves: the wallet part, its lines in order, the cluster and a first call with no key", () => {
+  const v = view(chatPage({ x402: walletBlock() }));
+  assert.ok(v.wallet);
+  assert.deepEqual(v.wallet.lines, [
+    API_PAGE_WALLET_WORDS.noKey,
+    walletChallengeLine("message", 5),
+    API_PAGE_WALLET_WORDS.order,
+    API_PAGE_WALLET_WORDS.noAnswer,
+    walletDeadlineLine(30),
+    "Each wallet can pay for 10 uses a minute here and 200 a day. Each address can call 10 times a minute here.",
+  ]);
+  assert.equal(v.wallet.networkLine, `network: ${DEVNET}`);
+  assert.equal(v.wallet.assetLine, `asset: ${DEVNET_USDC}`);
+  assert.equal(v.wallet.snippet.id, "curl");
+  // Its copy button is not named like the key's curl box above it.
+  assert.equal(v.wallet.snippet.label, API_PAGE_WALLET_WORDS.snippetLabel);
+  assert.ok(v.snippets.every((snippet) => snippet.label !== v.wallet!.snippet.label));
+  // The same request the key's curl sends, at the same address, with no key.
+  const keyed = paidAgentChatSnippets({ baseUrl: "https://api.example.com", model: "a/translator" });
+  assert.ok(v.wallet.snippet.code.startsWith(`curl -i ${keyed.endpointUrl} `));
+  assert.deepEqual(curlJson(v.wallet.snippet.code), curlJson(keyed.curl));
+  assert.ok(!/Authorization|Bearer|WHEELSAI_API_KEY/.test(v.wallet.snippet.code));
+  // The rest of the page is what it was without the block.
+  const { wallet: _with, ...withWallet } = v;
+  const { wallet: _without, ...without } = view(chatPage());
+  assert.deepEqual(withWallet, without);
+});
+
+test("every number of the wallet part is the block's own, never the page's price or a number typed in", () => {
+  const v = view(
+    chatPage({
+      x402: walletBlock({
+        priceCents: 7,
+        answerWithinSeconds: 20,
+        limits: { walletPerMinute: 4, walletPerDay: 50, addressPerMinute: 6 },
+      }),
+    }),
+  );
+  assert.ok(v.wallet);
+  assert.ok(v.wallet.lines[1]!.includes("one message, $0.07 in USDC"), v.wallet.lines[1]);
+  assert.ok(v.wallet.lines[4]!.startsWith("An answer paid this way must be ready within 20 seconds."), v.wallet.lines[4]);
+  assert.equal(v.wallet.lines[5], "Each wallet can pay for 4 uses a minute here and 50 a day. Each address can call 6 times a minute here.");
+  // The block's unit, not the page's: a page that says message with a block that says run reads run.
+  const run = view(chatPage({ x402: walletBlock({ unit: "run", priceCents: 12 }) }));
+  assert.ok(run.wallet);
+  assert.ok(run.wallet.lines[1]!.includes("one run, $0.12 in USDC"), run.wallet.lines[1]);
+});
+
+test("a task the door serves: one run, at its run address, with its form's answers and no key", () => {
+  const v = view(taskPage({ x402: walletBlock({ unit: "run", priceCents: 10 }) }));
+  assert.ok(v.wallet);
+  assert.equal(v.wallet.lines[1], walletChallengeLine("run", 10));
+  assert.ok(v.wallet.lines[1]!.includes("one run, $0.10 in USDC"));
+  const keyed = paidAgentRunSnippets({ baseUrl: "https://api.example.com", path: "/api/a/form-filler/run" });
+  assert.ok(v.wallet.snippet.code.startsWith(`curl -i ${keyed.endpointUrl} `));
+  assert.deepEqual(curlJson(v.wallet.snippet.code), curlJson(keyed.curl));
+  assert.ok(!v.wallet.snippet.code.includes("chat/completions"));
+});
+
+test("no wallet part without the block, with one that is not whole, on a listing by the month, or on a workflow's page", () => {
+  assert.equal(view(chatPage()).wallet, null);
+  assert.equal(view(chatPage({ x402: null })).wallet, null);
+  assert.equal(view(chatPage({ x402: undefined })).wallet, null);
+  const broken: Array<Partial<NonNullable<AgentApiPage["x402"]>> | Record<string, unknown>> = [
+    { priceCents: 0 },
+    { priceCents: 4.5 },
+    { unit: "month" },
+    { network: "" },
+    { asset: "  " },
+    { answerWithinSeconds: 0 },
+    { answerWithinSeconds: undefined },
+  ];
+  for (const over of broken) {
+    const page = chatPage({ x402: { ...walletBlock(), ...over } as NonNullable<AgentApiPage["x402"]> });
+    assert.equal(view(page).wallet, null, JSON.stringify(over));
+  }
+  assert.equal(view(chatPage({ x402: [] as unknown as null })).wallet, null);
+  // The door takes a use paid per message or per run, never a month.
+  assert.equal(view(monthlyPage({ x402: walletBlock() })).wallet, null);
+  // A workflow's page never has it, whatever came with the answer.
+  assert.equal(workflowView(workflowPage({ x402: walletBlock() } as Partial<WorkflowApiPage>)).wallet, null);
+  assert.equal(workflowView().wallet, null);
+});
+
+test("a block with no limits draws its lines without a limit line, never a number made up", () => {
+  const v = view(chatPage({ x402: walletBlock({ limits: undefined as unknown as NonNullable<AgentApiPage["x402"]>["limits"] }) }));
+  assert.ok(v.wallet);
+  assert.equal(v.wallet.lines.length, 5);
+  assert.ok(v.wallet.lines.every((line) => !/a minute here/.test(line)));
+});
+
+test("nothing the wallet part says speaks of tokens, people, an organization, the model or a count with no end", () => {
+  const dash = String.fromCharCode(0x2014);
+  const pages = [chatPage({ x402: walletBlock() }), taskPage({ x402: walletBlock({ unit: "run" }) })];
+  for (const page of pages) {
+    const v = view(page);
+    assert.ok(v.wallet);
+    for (const sentence of [...sentencesOf(page), API_PAGE_HEADINGS.wallet, ...Object.values(API_PAGE_WALLET_WORDS)]) {
+      assert.ok(!/unlimited|token|\busers?\b|people|customers|organi[sz]ation|\bmodel\b|creator/i.test(sentence), sentence);
+      assert.ok(!sentence.includes(dash), sentence);
+      assert.ok(/^[\x20-\x7e]*$/.test(sentence), sentence);
+    }
+    for (const literal of [v.wallet.networkLine, v.wallet.assetLine, v.wallet.snippet.code]) {
+      assert.ok(/^[\x20-\x7e\n]*$/.test(literal), literal);
+    }
+  }
 });

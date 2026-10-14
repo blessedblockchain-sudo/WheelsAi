@@ -4,7 +4,8 @@
  * code reads before they write a line. Where to send a request,
  * the model id, three snippets, what a use costs, the plans, the limits for
  * one buyer, the usage headers of an answer and the refusals a caller can
- * meet.
+ * meet. And, where the creator allows it, how to pay one use from a Solana
+ * wallet with no key (the x402 door).
  *
  * Pure: the page passes what `GET /api/a/:handle/api` said and draws what
  * comes back. Every number here was sent by the API, the plans are worded by
@@ -29,12 +30,19 @@ import {
   PAID_USE_MESSAGES,
   PAID_WORKFLOW_MESSAGES,
   agentPagePath,
+  dollars,
   priceLine,
   runTimeLimit,
   workflowPagePath,
   type PaidPrice,
 } from "./paid-use";
-import { API_KEY_ENV, paidAgentChatSnippets, paidAgentRunSnippets, type PaidAgentSnippets } from "./public-urls";
+import {
+  API_KEY_ENV,
+  paidAgentChatSnippets,
+  paidAgentRunSnippets,
+  x402ChallengeSnippet,
+  type PaidAgentSnippets,
+} from "./public-urls";
 import { payAsYouGoLine, planAfterLine, planPriceLine, planUsesLine, plansOf, trialOfferOf, trialSizeWords } from "./use-plans";
 
 // ============================================
@@ -109,7 +117,60 @@ export const API_PAGE_HEADINGS = {
   headers: "Usage headers",
   refusals: "When a request is refused",
   key: "Your key",
+  wallet: "Pay from a wallet, with no key",
 } as const;
+
+/**
+ * The fixed sentences of paying one use from a Solana wallet with no key.
+ * The ones with a number are built by the functions below, from the numbers
+ * the API page's data sent.
+ */
+export const API_PAGE_WALLET_WORDS = {
+  noKey: "No key is needed: pay each use in USDC from a Solana wallet with an x402 client.",
+  order:
+    "The answer is made and checked first. Only then is the payment sent to Solana, and the answer is released once it is confirmed, with PAYMENT-RESPONSE.",
+  noAnswer: "When there is no answer, the payment is never sent and nothing is charged.",
+  /** The first call's box, read out by its copy button: not the same name as the key's curl. */
+  snippetLabel: "curl with no key",
+} as const;
+
+/**
+ * How long a whole call paid from a wallet may take, in minutes: the time a
+ * payment's PAYMENT-REQUIRED header gives it (maxTimeoutSeconds, the API's
+ * X402_MAX_TIMEOUT_SECONDS of 180). The API page's data does not send it, so
+ * it is written here once, and a test holds it to the API's constant.
+ */
+export const WALLET_CALL_MINUTES = 3;
+
+const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+
+/** "A call with no key is answered 402 with the price of one message, $0.05 in USDC, ..." */
+export function walletChallengeLine(unit: "message" | "run", priceCents: number): string {
+  return `A call with no key is answered 402 with the price of one ${unit}, ${dollars(priceCents)} in USDC, in its PAYMENT-REQUIRED header. Your client pays and sends the same request again with PAYMENT-SIGNATURE.`;
+}
+
+/** "An answer paid this way must be ready within 30 seconds. Allow up to 3 minutes ..." */
+export function walletDeadlineLine(answerWithinSeconds: number): string {
+  return `An answer paid this way must be ready within ${plural(answerWithinSeconds, "second", "seconds")}. Allow up to ${plural(WALLET_CALL_MINUTES, "minute", "minutes")} for the whole call while the payment is confirmed.`;
+}
+
+/**
+ * What one wallet may pay for here and how often one address may call, in
+ * one line, with the numbers the API sent. A number it did not send is not
+ * said, and a line with none is null.
+ */
+export function walletLimitLine(
+  limits: Partial<Record<keyof NonNullable<AgentApiPage["x402"]>["limits"], unknown>> | null | undefined,
+): string | null {
+  const parts: string[] = [];
+  if (isLimit(limits?.walletPerMinute) && isLimit(limits?.walletPerDay)) {
+    parts.push(`Each wallet can pay for ${plural(limits.walletPerMinute, "use", "uses")} a minute here and ${limits.walletPerDay} a day.`);
+  }
+  if (isLimit(limits?.addressPerMinute)) {
+    parts.push(`Each address can call ${plural(limits.addressPerMinute, "time", "times")} a minute here.`);
+  }
+  return parts.length > 0 ? parts.join(" ") : null;
+}
 
 /** "Translator API": the page's title, on the page and in the browser's tab. */
 export function apiPageTitle(name: string): string {
@@ -274,6 +335,18 @@ export interface ApiPageRefusal {
   message: string;
 }
 
+/** Paying one use from a Solana wallet with no key: the lines, the cluster and the first call. */
+export interface ApiPageWallet {
+  /** A sentence each, in the order they are drawn. */
+  lines: string[];
+  /** "network: solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1": the cluster, as the published format names it. */
+  networkLine: string;
+  /** "asset: 4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU": the USDC mint a use is paid in. */
+  assetLine: string;
+  /** The first call, with no key, to the address the key's snippets call: answered 402 with the price. */
+  snippet: ApiPageSnippet;
+}
+
 export interface ApiPageView {
   /** "Translator API" */
   title: string;
@@ -318,6 +391,12 @@ export interface ApiPageView {
   /** That the agent is started on its own page first. */
   startFirst: string;
   createKeyLabel: string;
+  /**
+   * How to pay one use from a Solana wallet with no key. Null when the API
+   * page's data does not offer it (the creator did not allow it, the door is
+   * closed, or an API that does not say), and always on a workflow's page.
+   */
+  wallet: ApiPageWallet | null;
 }
 
 /** What each usage header says. The names are the API's (services/usageHeaders.ts). */
@@ -411,6 +490,35 @@ function planRow(plan: PlanOffer): ApiPagePlan {
   };
 }
 
+/**
+ * Paying one use from a wallet, from the API page's `x402` block. Null with
+ * no block, with one that is not whole (it is never drawn in part), and on a
+ * listing sold by the month, which the door does not take. `endpointUrl` and
+ * `body` are those of the key's snippets: the first call is the same request
+ * with no key.
+ */
+function walletOf(page: AgentApiPage, endpointUrl: string, body: Record<string, unknown>): ApiPageWallet | null {
+  const block: unknown = page.x402;
+  if (!isRecord(block) || page.pricingModel === "monthly") return null;
+  const { priceCents, unit, network, asset, answerWithinSeconds } = block;
+  if (!isLimit(priceCents) || (unit !== "message" && unit !== "run")) return null;
+  if (!isText(network) || !isText(asset) || !isLimit(answerWithinSeconds)) return null;
+  const limitLine = walletLimitLine(isRecord(block.limits) ? block.limits : null);
+  return {
+    lines: [
+      API_PAGE_WALLET_WORDS.noKey,
+      walletChallengeLine(unit, priceCents),
+      API_PAGE_WALLET_WORDS.order,
+      API_PAGE_WALLET_WORDS.noAnswer,
+      walletDeadlineLine(answerWithinSeconds),
+      ...(limitLine ? [limitLine] : []),
+    ],
+    networkLine: `network: ${network.trim()}`,
+    assetLine: `asset: ${asset.trim()}`,
+    snippet: { id: "curl", label: API_PAGE_WALLET_WORDS.snippetLabel, code: x402ChallengeSnippet({ endpointUrl, body }) },
+  };
+}
+
 function snippetRows(snippets: PaidAgentSnippets): ApiPageSnippet[] {
   return [
     { id: "curl", label: "curl", code: snippets.curl },
@@ -436,16 +544,20 @@ export function apiPageView(page: AgentApiPage | WorkflowApiPage, apiBase: strin
   let kind: ApiPageView["kind"];
   let called: AgentApiEndpoint | undefined;
   let snippets: PaidAgentSnippets;
+  // The body the key's snippets send, which the first call paid from a wallet sends too.
+  let body: Record<string, unknown>;
   if (page.agentKind === "task") {
     called = endpoints.find((endpoint) => endpoint.use === "run");
     if (!called) return null;
     kind = "task";
     snippets = paidAgentRunSnippets({ baseUrl: address, path: called.path });
+    body = { input: { field_name: "Your answer" }, stream: false };
   } else {
     called = endpoints.find((endpoint) => endpoint.use === "openai");
     if (!called || !isText(page.model)) return null;
     kind = "chat";
     snippets = paidAgentChatSnippets({ baseUrl: address, model: page.model });
+    body = { model: page.model, messages: [{ role: "user", content: "Hello!" }] };
   }
 
   const name = page.name.trim();
@@ -490,6 +602,7 @@ export function apiPageView(page: AgentApiPage | WorkflowApiPage, apiBase: strin
     keyScope: API_PAGE_WORDS.keyScope,
     startFirst: API_PAGE_WORDS.startFirst,
     createKeyLabel: API_PAGE_WORDS.createKey,
+    wallet: walletOf(page, snippets.endpointUrl, body),
   };
 }
 
@@ -549,5 +662,7 @@ function workflowApiPageView(page: WorkflowApiPage, apiBase: string): ApiPageVie
     keyScope: API_PAGE_WORDS.keyScope,
     startFirst: WORKFLOW_API_PAGE_WORDS.startFirst,
     createKeyLabel: API_PAGE_WORDS.createKey,
+    // A workflow is not paid from a wallet: a run may take longer than a payment can wait.
+    wallet: null,
   };
 }

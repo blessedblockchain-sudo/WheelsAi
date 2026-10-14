@@ -22,6 +22,7 @@ import {
   landingAgentEndpoint,
   landingMarketplaceUrl,
   siteMetadataBase,
+  x402ChallengeSnippet,
 } from "./public-urls";
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -358,4 +359,44 @@ test("a workflow's snippets post the input alone to its run address, which alway
     paidAgentRunSnippets({ baseUrl: "https://api.example.com", path: "/api/a/form-filler/run", subject: "agent" }),
     paidRun(),
   );
+});
+
+// ============================================
+// Paying one use from a wallet, with no key
+// ============================================
+
+const challenge = (endpointUrl: string, body: Record<string, unknown>) => x402ChallengeSnippet({ endpointUrl, body });
+
+test("the first call of a use paid from a wallet is a curl with no key, that prints the answer's headers", () => {
+  const body = { model: "a/translator", messages: [{ role: "user", content: "Hello!" }] };
+  const curl = challenge("https://api.example.com/v1/chat/completions", body);
+  // -i, so the 402 and its PAYMENT-REQUIRED header show.
+  assert.match(curl, /^curl -i https:\/\/api\.example\.com\/v1\/chat\/completions \\\n/);
+  assert.ok(curl.includes('-H "Content-Type: application/json"'));
+  // No key of any kind, and no payment signed by hand: that is the x402 client's.
+  assert.ok(!/Authorization|Bearer|WHEELSAI_API_KEY|PAYMENT-SIGNATURE/i.test(curl), curl);
+  assert.equal(curl.match(/-H /g)?.length, 1);
+});
+
+test("the wallet's first call sends the same body as the key's snippet, to the same address", () => {
+  const chat = paidChat();
+  const chatCall = challenge(chat.endpointUrl, { model: "a/translator", messages: [{ role: "user", content: "Hello!" }] });
+  assert.deepEqual(curlBody(chatCall), curlBody(chat.curl));
+  assert.ok(chatCall.startsWith(`curl -i ${chat.endpointUrl} \\\n`));
+
+  const run = paidRun();
+  const runCall = challenge(run.endpointUrl, { input: { field_name: "Your answer" }, stream: false });
+  assert.deepEqual(curlBody(runCall), curlBody(run.curl));
+  assert.ok(runCall.startsWith(`curl -i ${run.endpointUrl} \\\n`));
+});
+
+test("the wallet's first call is plain text a terminal takes, whatever the body holds", () => {
+  const odd = { input: { note: "it's caf\u00e9" }, stream: false };
+  const curl = challenge("https://api.example.com/api/a/x/run", odd);
+  assert.ok(/^[\x20-\x7e\n]*$/.test(curl), curl);
+  assert.ok(!/[ \t]+\n/.test(curl), "no space at a line's end, which breaks a curl continuation");
+  // The shell's quoting holds: the quote is closed, escaped and reopened, and the JSON reads back whole.
+  assert.ok(curl.includes("it'\\''s"));
+  const unquoted = /-d '([\s\S]*)'$/.exec(curl)?.[1]?.replace(/'\\''/g, "'");
+  assert.deepEqual(JSON.parse(unquoted ?? ""), odd);
 });

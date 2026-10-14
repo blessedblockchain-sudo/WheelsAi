@@ -12,6 +12,14 @@
  * the same count. Its warning comes from the count, never from a stored
  * level.
  *
+ * Two words about a free trial. `trialEnded` says that what ended was the
+ * buyer's own free trial, by the expression the access read uses. On a
+ * running trial `perUseAfterTrial` says what one use costs this buyer once
+ * the free uses are gone, and only when the metering would charge it without
+ * asking them again (trialBilling, services/useMetering.ts): it is decided
+ * from the functions that rule rests on, and when they do not say "charged"
+ * it is null. What it tells is the listing's own price, which is public.
+ *
  * Counts and cents come from the buyer's own settled charges per use
  * (`marketplace_revenue`): a charge that is still held, or was given back,
  * is not money spent and is not counted. They are read in ONE query for all
@@ -19,17 +27,20 @@
  * plan is an extra use of it (an included use has no charge), and a charge
  * of this month outside that period was paid per use.
  *
- * Never in the answer: tokens, the model, the creator's organization, or
- * anything of another buyer. Every read takes the organization, and a row
- * that is not this organization's is dropped here whatever a read returned.
+ * Never in the answer: tokens, the model, the creator's organization, the
+ * price the buyer agreed to, or anything of another buyer. Every read takes
+ * the organization, and a row that is not this organization's is dropped
+ * here whatever a read returned.
  *
  * Pure: the reads and the clock are passed in
  * (services/buildBuyerUsageDeps.ts binds them).
  */
 
+import { onTrialPlan } from "./listingPlans.js";
 import { accessPlanOf, planWillRenew, type PaidSubscription, type UseAccessPlan } from "./paidUse.js";
 import type { AcceptedPricing } from "./subscriptionAccess.js";
-import { onPlan, useAccess, type UseAccess } from "./useAccess.js";
+import { onPlan, useAccess, useDecision, type UseAccess } from "./useAccess.js";
+import { useUnitOf } from "./useListing.js";
 
 /** The most listings one answer carries, the newest licences first. */
 export const BUYER_USAGE_MAX_LISTINGS = 200;
@@ -50,8 +61,12 @@ export interface BuyerUsageLicence {
     sells: string;
     pricingModel: string;
     pricePerRequestCents: bigint | null;
+    /** AgentListing.publisherId, the creator's organization. Read to know the buyer's own listing; never in the answer. */
+    publisherId: string;
     /** The agent's address, /a/<handle>. null when the agent has no page. */
     handle: string | null;
+    /** Agent.agentKind: a task agent's use is a run, any other a message. null when it could not be read. */
+    agentKind: string | null;
   };
   /** AgentSubscription of this buyer on this listing, with `subscriberId` as read. */
   sub: (PaidSubscription & { subscriberId: string }) | null;
@@ -96,6 +111,13 @@ export interface UsesAndCents {
   cents: number;
 }
 
+/** What one use costs a buyer once their free trial's uses are gone. */
+export interface PerUseAfterTrial {
+  /** The listing's price per use now, in cents. Never the price the buyer agreed to. */
+  priceCents: number;
+  unit: "message" | "run";
+}
+
 export interface BuyerUsageRow {
   listingId: string;
   title: string;
@@ -103,8 +125,17 @@ export interface BuyerUsageRow {
   /** The agent's address, /a/<handle>. */
   handle: string | null;
   access: UseAccess;
+  /** True only when `access` is plan_ended and what ended was this buyer's own free trial. */
+  trialEnded: boolean;
   /** The plan the buyer is on, while it gives uses. null otherwise. */
   plan: UseAccessPlan | null;
+  /**
+   * On a running free trial: what each use costs once the free uses are
+   * gone, charged without asking the buyer again. null when such a use would
+   * not be charged (the buyer is then stopped or asked first), and on every
+   * row that is not on a trial.
+   */
+  perUseAfterTrial: PerUseAfterTrial | null;
   /**
    * On a plan: the end of the 30 days paid for, an ISO time. A page says it
    * as the day the plan ends when the plan will not renew (its `plan` then
@@ -139,6 +170,40 @@ function told(sums: Map<string, PaidUseSum>, key: string | null): UsesAndCents {
   const uses = Number.isSafeInteger(sum.uses) && sum.uses >= 0 ? sum.uses : 0;
   const cents = typeof sum.cents === "bigint" && sum.cents >= 0n ? Number(sum.cents) : 0;
   return { uses, cents };
+}
+
+/**
+ * What a use past a free trial's uses costs this buyer, or null when it is
+ * not charged.
+ *
+ * It must say what trialBilling (services/useMetering.ts) charges, so it is
+ * decided the way that rule is: the listing is not the buyer's own (the
+ * creator's organization never pays itself, resolveUseBilling's first
+ * refusal), the licence is active, the buyer agreed to a
+ * price per use themselves, and the same licence and listing with NO
+ * subscription are charged per use. That last part is useAccess and
+ * useDecision, the two functions resolveUseBilling stands on: they hold the
+ * comparison of the listing's price with the agreed one, so it is not
+ * written again here. Anything they do not answer "charged" for is null.
+ */
+function perUseAfterTrialOf(licence: BuyerUsageLicence, now: Date): PerUseAfterTrial | null {
+  const { listing } = licence;
+  if (listing.publisherId === licence.buyerId) return null;
+  if (licence.status !== "active" || licence.accepted.pricingModel !== "per_request") return null;
+  const access = useAccess(
+    { licence: { kind: "use", status: licence.status, accepted: licence.accepted }, listing, sub: null },
+    now,
+  );
+  if (access !== "listing_pricing") return null;
+  const decision = useDecision(access, listing);
+  if (!decision.runs || !decision.charged) return null;
+  // A price per use is never said by the month.
+  const unit = useUnitOf(listing.agentKind, listing.pricingModel);
+  if (unit === "month") return null;
+  const price = listing.pricePerRequestCents;
+  if (typeof price !== "bigint" || price <= 0n) return null;
+  const priceCents = Number(price);
+  return Number.isSafeInteger(priceCents) ? { priceCents, unit } : null;
 }
 
 /** GET /api/billing/marketplace-usage, for the caller's organization. */
@@ -182,7 +247,10 @@ export async function readBuyerUsage(deps: BuyerUsageDeps, orgId: string): Promi
       perUseKey = `per_use:${index}`;
       windows.push({ key: perUseKey, listingId: listing.id, from: monthStart, until: null });
     }
-    return { listing, access, held, extraKey, perUseKey };
+    // The same expression as the access read (services/paidUse.ts).
+    const trialEnded = access === "plan_ended" && sub !== null && onTrialPlan(sub);
+    const perUseAfterTrial = held && onTrialPlan(held) ? perUseAfterTrialOf(licence, now) : null;
+    return { listing, access, trialEnded, held, perUseAfterTrial, extraKey, perUseKey };
   });
 
   const sums =
@@ -190,13 +258,15 @@ export async function readBuyerUsage(deps: BuyerUsageDeps, orgId: string): Promi
 
   return {
     balanceCents: Number(balance),
-    listings: drawn.map(({ listing, access, held, extraKey, perUseKey }) => ({
+    listings: drawn.map(({ listing, access, trialEnded, held, perUseAfterTrial, extraKey, perUseKey }) => ({
       listingId: listing.id,
       title: listing.title,
       slug: listing.slug,
       handle: listing.handle,
       access,
+      trialEnded,
       plan: held && accessPlanOf(held, planWillRenew(listing, held)),
+      perUseAfterTrial,
       periodEndsAt: held ? held.currentPeriodEnd.toISOString() : null,
       renewalPastDue: held ? held.status === "past_due" : false,
       extraThisPeriod: held ? told(sums, extraKey) : null,

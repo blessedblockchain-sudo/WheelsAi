@@ -19,6 +19,7 @@ import {
   type BuyerUsageDeps,
   type BuyerUsageLicence,
 } from "../services/buyerUsage.js";
+import { resolveUseBilling } from "../services/useMetering.js";
 import { ORG, OTHER_ORG, makeBillingDb, matches, uuid } from "./billingLedgerStandIn.js";
 
 // services/buyerUsage.ts and its reads: what a buyer has used and spent on
@@ -294,6 +295,7 @@ test("a buyer on a plan: the plan as the agent's page builds it, the extra uses 
     slug: "support-desk",
     handle: "agent-01",
     access: "subscribed",
+    trialEnded: false,
     plan: {
       id: STARTER,
       name: "Starter",
@@ -307,6 +309,7 @@ test("a buyer on a plan: the plan as the agent's page builds it, the extra uses 
       // From the count: the stored level is 0.
       warning: 100,
     },
+    perUseAfterTrial: null,
     // The end of the 30 days paid for, whether or not the plan renews.
     periodEndsAt: "2026-11-04T00:00:00.000Z",
     renewalPastDue: false,
@@ -349,7 +352,9 @@ test("a monthly subscriber: subscribed, no plan, nothing extra and nothing per u
     slug: "daily-brief",
     handle: "agent-03",
     access: "subscribed",
+    trialEnded: false,
     plan: null,
+    perUseAfterTrial: null,
     periodEndsAt: null,
     renewalPastDue: false,
     extraThisPeriod: null,
@@ -408,6 +413,227 @@ test("a buyer on a free trial: the plan is marked as a trial and named Free tria
     warning: 85,
   });
   assert.equal(row.periodEndsAt, "2026-10-17T00:00:00.000Z");
+});
+
+// ---- a free trial: that it ended, and what a use costs after its free uses ----
+
+/** The trial's row as its start writes it: a price of nothing, 7 days, set to end, no extra price. */
+function trialSub(over: Row = {}): Row {
+  return planSub(PLAN_LISTING, {
+    priceCents: 0n,
+    includedUses: 20,
+    usedInPeriod: 20,
+    extraUsePriceCents: null,
+    cancelAtPeriodEnd: true,
+    currentPeriodStart: at("2026-10-10T00:00:00Z"),
+    currentPeriodEnd: at("2026-10-17T00:00:00Z"),
+    ...over,
+  });
+}
+
+/** The seed with the plan's listing on a free trial, each of its three rows changed as asked. */
+function trialTables(over: { licence?: Row; listing?: Row; sub?: Row; agentKind?: string } = {}): Tables {
+  const tables = seed();
+  const base = tables.agentListing[0]!;
+  tables.agentListing[0] = {
+    ...base,
+    agent: { ...(base.agent as Row), agentKind: over.agentKind ?? "conversation" },
+    ...over.listing,
+  };
+  // A trial start writes no agreement; the buyer agreed to the price per use afterwards.
+  tables.agentInstall[0] = licence(PLAN_LISTING, { installedAt: at("2026-10-04T00:00:00Z"), ...over.licence });
+  tables.agentSubscription[0] = trialSub(over.sub);
+  return tables;
+}
+
+async function trialRow(tables: Tables, now: Date = NOW) {
+  const { deps } = depsOver(tables, now);
+  return (await readBuyerUsage(deps, ORG)).listings.find((l) => l.listingId === PLAN_LISTING)!;
+}
+
+const AFTER_TRIAL = at("2026-10-18T00:00:00Z");
+
+test("trialEnded: true only when what ended was this organization's own free trial", async () => {
+  // Its 7 days are over and the buyer agreed to no price per use.
+  const ended = trialTables({ licence: { acceptedPricingModel: null, acceptedPricePerRequestCents: null } });
+  const row = await trialRow(ended, AFTER_TRIAL);
+  assert.equal(row.access, "plan_ended");
+  assert.equal(row.trialEnded, true);
+  assert.equal(row.plan, null);
+  assert.equal(row.perUseAfterTrial, null);
+
+  // The same trial while it runs.
+  assert.equal((await trialRow(ended)).trialEnded, false);
+
+  // A paid plan that ended, a buyer who pays per use, a month: never.
+  const { deps } = depsOver(seed());
+  const view = await readBuyerUsage(deps, ORG);
+  const byListing = (id: string) => view.listings.find((l) => l.listingId === id)!;
+  assert.equal(byListing(ENDED_LISTING).access, "plan_ended");
+  assert.equal(byListing(ENDED_LISTING).trialEnded, false);
+  assert.equal(byListing(PER_USE_LISTING).trialEnded, false);
+  assert.equal(byListing(MONTHLY_LISTING).trialEnded, false);
+  assert.equal(byListing(PLAN_LISTING).trialEnded, false);
+});
+
+test("trialEnded: a buyer who agreed to pay per use goes on after the trial, so nothing ended for them", async () => {
+  const row = await trialRow(trialTables(), AFTER_TRIAL);
+  assert.equal(row.access, "listing_pricing");
+  assert.equal(row.trialEnded, false);
+  assert.equal(row.perUseAfterTrial, null);
+});
+
+test("trialEnded: an ended trial that is another organization's says nothing of this buyer", async () => {
+  const mine: BuyerUsageLicence = {
+    buyerId: ORG,
+    status: "active",
+    accepted: { pricingModel: null, pricePerRequestCents: null },
+    listing: {
+      id: PLAN_LISTING,
+      title: "Support desk",
+      slug: "support-desk",
+      status: "published",
+      sells: "use",
+      pricingModel: "per_request",
+      pricePerRequestCents: 5n,
+      publisherId: PUBLISHER,
+      handle: "support",
+      agentKind: "conversation",
+    },
+    sub: {
+      id: uuid(791),
+      subscriberId: OTHER_ORG,
+      status: "expired",
+      currentPeriodStart: at("2026-10-01T00:00:00Z"),
+      currentPeriodEnd: at("2026-10-08T00:00:00Z"),
+      cancelAtPeriodEnd: true,
+      priceCents: 0n,
+      includedUses: 20,
+      usedInPeriod: 3,
+      carriedUses: 0,
+    },
+  };
+  const deps = (licences: BuyerUsageLicence[]): BuyerUsageDeps => ({
+    readBalance: async () => 0n,
+    loadLicences: async () => licences,
+    sumPaidUses: async () => new Map(),
+    now: () => NOW,
+  });
+  const theirs = (await readBuyerUsage(deps([mine]), ORG)).listings[0]!;
+  assert.equal(theirs.trialEnded, false);
+  assert.notEqual(theirs.access, "plan_ended");
+  // The very same row, when it is this organization's, is an ended trial.
+  const own = (await readBuyerUsage(deps([{ ...mine, sub: { ...mine.sub!, subscriberId: ORG } }]), ORG)).listings[0]!;
+  assert.equal(own.access, "plan_ended");
+  assert.equal(own.trialEnded, true);
+});
+
+test("perUseAfterTrial: a buyer on a trial who agreed to the listing's price per use is told that price", async () => {
+  const row = await trialRow(trialTables());
+  assert.equal(row.access, "subscribed");
+  assert.equal(row.plan?.trial, true);
+  assert.deepEqual(row.perUseAfterTrial, { priceCents: 5, unit: "message" });
+  // Said while free uses are left too: it is what comes after them.
+  const early = await trialRow(trialTables({ sub: { usedInPeriod: 3 } }));
+  assert.deepEqual(early.perUseAfterTrial, { priceCents: 5, unit: "message" });
+});
+
+test("perUseAfterTrial: it is the listing's price now, never the higher one the buyer agreed to", async () => {
+  const row = await trialRow(trialTables({ licence: { acceptedPricePerRequestCents: 9n } }));
+  assert.deepEqual(row.perUseAfterTrial, { priceCents: 5, unit: "message" });
+});
+
+test("perUseAfterTrial: a task agent's use is a run", async () => {
+  const row = await trialRow(trialTables({ agentKind: "task" }));
+  assert.deepEqual(row.perUseAfterTrial, { priceCents: 5, unit: "run" });
+});
+
+test("perUseAfterTrial: null whenever a use past the trial would not be charged without asking", async () => {
+  const nothing: Array<[string, Parameters<typeof trialTables>[0]]> = [
+    ["the listing asks more than was agreed", { listing: { pricePerRequestCents: 8n } }],
+    ["agreed to a month", { licence: { acceptedPricingModel: "monthly", acceptedPricePerRequestCents: null } }],
+    ["nothing agreed", { licence: { acceptedPricingModel: null, acceptedPricePerRequestCents: null } }],
+    ["agreed per use with no price on the row", { licence: { acceptedPricePerRequestCents: null } }],
+    ["a suspended licence", { licence: { status: "suspended" } }],
+    ["the listing is not published", { listing: { status: "paused" } }],
+    ["the listing is sold by the month", { listing: { pricingModel: "monthly", pricePerRequestCents: null } }],
+    ["the listing sells copies", { listing: { sells: "copies" } }],
+    ["the listing is free", { listing: { pricingModel: "free", pricePerRequestCents: null } }],
+    ["a price of nothing", { listing: { pricePerRequestCents: 0n } }],
+  ];
+  for (const [name, over] of nothing) {
+    const row = await trialRow(trialTables(over));
+    // Still on the trial: the row is there to say a price, and says none.
+    assert.equal(row.plan?.trial, true, name);
+    assert.equal(row.perUseAfterTrial, null, name);
+  }
+});
+
+test("perUseAfterTrial: never on a paid plan or off a plan, whatever was agreed per use", async () => {
+  // A paid plan at its count, on a licence that agreed to the listing's price per use.
+  const paid = trialTables({ sub: { priceCents: 900n, includedUses: 500, usedInPeriod: 500, cancelAtPeriodEnd: false } });
+  const onPaid = await trialRow(paid);
+  assert.equal(onPaid.plan?.trial, false);
+  assert.equal(onPaid.perUseAfterTrial, null);
+
+  const { deps } = depsOver(seed());
+  const view = await readBuyerUsage(deps, ORG);
+  for (const row of view.listings) assert.equal(row.perUseAfterTrial, null, row.title);
+  // Among them a buyer who pays per use at exactly the listing's price.
+  assert.equal(view.listings.find((l) => l.listingId === PER_USE_LISTING)!.access, "listing_pricing");
+});
+
+test("perUseAfterTrial says exactly what the metering charges for a use past the trial's count", async () => {
+  const states: Array<[string, Parameters<typeof trialTables>[0]]> = [
+    ["agreed at the listing's price", {}],
+    ["agreed at more than the listing asks", { licence: { acceptedPricePerRequestCents: 9n } }],
+    ["agreed at less than the listing asks", { listing: { pricePerRequestCents: 8n } }],
+    ["agreed to a month", { licence: { acceptedPricingModel: "monthly", acceptedPricePerRequestCents: null } }],
+    ["nothing agreed", { licence: { acceptedPricingModel: null, acceptedPricePerRequestCents: null } }],
+    ["agreed per use with no price on the row", { licence: { acceptedPricePerRequestCents: null } }],
+    ["a suspended licence", { licence: { status: "suspended" } }],
+    ["the listing is not published", { listing: { status: "paused" } }],
+    ["the listing is archived", { listing: { status: "archived" } }],
+    ["the listing is sold by the month", { listing: { pricingModel: "monthly", pricePerRequestCents: null } }],
+    ["the listing sells copies", { listing: { sells: "copies" } }],
+    ["the listing is free", { listing: { pricingModel: "free", pricePerRequestCents: null } }],
+    ["a price of nothing", { listing: { pricePerRequestCents: 0n } }],
+    ["a task agent", { agentKind: "task" }],
+    ["free uses left", { sub: { usedInPeriod: 3 } }],
+    // A trial's row never carries a price of its own for an extra use; one that did changes nothing.
+    ["a trial row that carries an extra price", { sub: { extraUsePriceCents: 2n } }],
+    ["a trial row that is past due", { sub: { status: "past_due" } }],
+    ["a trial row whose renewal was not cancelled", { sub: { cancelAtPeriodEnd: false } }],
+    // The creator's own organization never pays itself, whatever rows exist.
+    ["the buyer's own listing", { listing: { publisherId: ORG } }],
+  ];
+  let charged = 0;
+  for (const [name, over] of states) {
+    const tables = trialTables(over);
+    const row = await trialRow(tables);
+    const listingRow = tables.agentListing[0]!;
+    const licenceRow = tables.agentInstall[0]!;
+    // The use itself, decided from the same three rows with the trial's uses gone.
+    const billing = resolveUseBilling(
+      {
+        callerOrgId: ORG,
+        listing: listingRow as never,
+        licence: { id: uuid(600), ...licenceRow } as never,
+        sub: { ...tables.agentSubscription[0]!, usedInPeriod: 20 } as never,
+      },
+      NOW,
+    );
+    const metered =
+      billing.kind === "plan" && billing.extraInstall ? Number(billing.extraInstall.pricePerRequestCents) : null;
+    assert.equal(row.perUseAfterTrial?.priceCents ?? null, metered, name);
+    if (metered === null) continue;
+    charged += 1;
+    // What is charged is the listing's price, never the row's own extra price or the price agreed.
+    assert.equal(metered, Number(listingRow.pricePerRequestCents), name);
+    assert.equal(row.perUseAfterTrial?.unit, over?.agentKind === "task" ? "run" : "message", name);
+  }
+  // The comparison is not empty on either side.
+  assert.equal(charged, 7);
 });
 
 test("a plan whose renewal is being retried says so, and its period's end is behind the buyer", async () => {
@@ -533,7 +759,9 @@ test("a read that answers with another organization's licence or subscription: n
       sells: "use",
       pricingModel: "per_request",
       pricePerRequestCents: 5n,
+      publisherId: PUBLISHER,
       handle: "support",
+      agentKind: "conversation",
     },
     // Somebody else's plan, handed back beside this buyer's licence.
     sub: {
@@ -675,7 +903,9 @@ test("GET /marketplace-usage: the balance and a row per listing, for the caller'
       "slug",
       "handle",
       "access",
+      "trialEnded",
       "plan",
+      "perUseAfterTrial",
       "periodEndsAt",
       "renewalPastDue",
       "extraThisPeriod",

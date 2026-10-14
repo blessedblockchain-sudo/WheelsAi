@@ -33,7 +33,9 @@ const LICENCE_SELECT = {
       sells: true,
       pricingModel: true,
       pricePerRequestCents: true,
-      agent: { select: { publicHandle: true } },
+      // To know a licence on the reader's own listing. Never in the answer.
+      publisherId: true,
+      agent: { select: { publicHandle: true, agentKind: true } },
     },
   },
 } as const;
@@ -86,7 +88,8 @@ interface LicenceRow {
     sells: string;
     pricingModel: string;
     pricePerRequestCents: bigint | null;
-    agent: { publicHandle: string | null } | null;
+    publisherId: string;
+    agent: { publicHandle: string | null; agentKind: string | null } | null;
     subscriptions: SubscriptionRow[];
   };
 }
@@ -197,7 +200,9 @@ function licenceOf(row: LicenceRow): BuyerUsageLicence {
       sells: listing.sells,
       pricingModel: listing.pricingModel,
       pricePerRequestCents: listing.pricePerRequestCents,
+      publisherId: listing.publisherId,
       handle: listing.agent?.publicHandle ?? null,
+      agentKind: listing.agent?.agentKind ?? null,
     },
     sub: sub && {
       id: sub.id,

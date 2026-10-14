@@ -15,12 +15,15 @@ import {
   PLAN_NAME_MAX,
   PLANS_RELOAD_WORDS,
   PLAN_WORDS,
+  TRIAL_WORDS,
   addPlanRow,
   canAddPlan,
   checkPlanRow,
   checkPlans,
+  checkTrial,
   emptyPlansForm,
   endPlanDialog,
+  endTrialDialog,
   endingPlanLines,
   hasPlanErrors,
   noPlanErrors,
@@ -42,8 +45,15 @@ import {
   removePlanLabel,
   removePlanRow,
   savedPlansOf,
+  savedTrialOf,
   sellsWithPlans,
+  trialEndingLine,
+  trialFormOf,
+  trialNote,
+  trialProblemOf,
+  trialSaleLine,
   withPlanRow,
+  withTrial,
   type PlanRow,
   type PlansForm,
   type SavedPlan,
@@ -71,6 +81,8 @@ function row(over: Partial<PlanRow> = {}): PlanRow {
 
 const STARTER = saved();
 const PRO = saved({ id: "p2", name: "Pro", priceCents: 2900, includedUses: 2000, extraUsePriceCents: 7, subscribers: 12 });
+/** The listing's free trial as its creator reads it: first in the list, named by the API, with the people on it now. */
+const TRIAL = saved({ id: "t1", kind: "trial", name: "Free trial", priceCents: 0, includedUses: 20, extraUsePriceCents: null, subscribers: 3 });
 
 test("the words of the block are the design's", () => {
   assert.deepEqual(PLAN_WORDS, {
@@ -93,13 +105,28 @@ test("the words of the block are the design's", () => {
 });
 
 test("the limits come from the capabilities, and are the API's own when they could not be read", () => {
-  assert.deepEqual(DEFAULT_PLAN_LIMITS, { maxPlans: 4, maxIncludedUses: 100_000, minPlanPriceCents: 100, minExtraUsePriceCents: 5 });
+  assert.deepEqual(DEFAULT_PLAN_LIMITS, {
+    maxPlans: 4,
+    maxIncludedUses: 100_000,
+    minPlanPriceCents: 100,
+    minExtraUsePriceCents: 5,
+    maxTrialUses: 50,
+    trialDays: 7,
+  });
   assert.deepEqual(planLimitsOf(null), DEFAULT_PLAN_LIMITS);
   assert.deepEqual(planLimitsOf({}), DEFAULT_PLAN_LIMITS);
   assert.deepEqual(
-    planLimitsOf({ paidUse: { maxPlans: 3, maxIncludedUses: 100_000, minPlanPriceCents: 200, minExtraUsePriceCents: 7 } }),
-    { maxPlans: 3, maxIncludedUses: 100_000, minPlanPriceCents: 200, minExtraUsePriceCents: 7 },
+    planLimitsOf({
+      paidUse: { maxPlans: 3, maxIncludedUses: 100_000, minPlanPriceCents: 200, minExtraUsePriceCents: 7, maxTrialUses: 30, trialDays: 5 },
+    }),
+    { maxPlans: 3, maxIncludedUses: 100_000, minPlanPriceCents: 200, minExtraUsePriceCents: 7, maxTrialUses: 30, trialDays: 5 },
   );
+  // An API that says nothing of a trial yet: its numbers are the API's own.
+  assert.deepEqual(
+    planLimitsOf({ paidUse: { maxPlans: 3, maxIncludedUses: 100_000, minPlanPriceCents: 200, minExtraUsePriceCents: 7 } }),
+    { maxPlans: 3, maxIncludedUses: 100_000, minPlanPriceCents: 200, minExtraUsePriceCents: 7, maxTrialUses: 50, trialDays: 7 },
+  );
+  assert.deepEqual(planLimitsOf({ paidUse: { maxTrialUses: 0, trialDays: "a week" } }), DEFAULT_PLAN_LIMITS);
   // A number that is not a whole positive one is not believed.
   assert.deepEqual(planLimitsOf({ paidUse: { maxPlans: 0, maxIncludedUses: "many", minPlanPriceCents: 1.5 } }), DEFAULT_PLAN_LIMITS);
   assert.equal(PLAN_NAME_MAX, 40);
@@ -185,7 +212,7 @@ test("a row is checked field by field, with a sentence under each", () => {
 });
 
 test("the checks use the numbers they are given", () => {
-  const limits = { maxPlans: 2, maxIncludedUses: 100_000, minPlanPriceCents: 500, minExtraUsePriceCents: 10 };
+  const limits = { ...DEFAULT_PLAN_LIMITS, maxPlans: 2, minPlanPriceCents: 500, minExtraUsePriceCents: 10 };
   const errorsOf = (over: Partial<PlanRow>) => {
     const checked = checkPlanRow(row(over), limits);
     return checked.ok ? {} : checked.errors;
@@ -257,11 +284,365 @@ test("the rows of a listing are its paid plans on offer, and a listing without i
   assert.deepEqual(plansSaveOf({ sell: PER_USE, form: plansFormOf({ plans: [bare] }), saved: [bare] }), { kind: "none" });
   assert.equal(savedPlansOf(null)?.length, 0);
   assert.equal(savedPlansOf({}), null);
-  // A trial and an ended plan are not rows: neither is set here.
-  assert.deepEqual(
-    savedPlansOf({ plans: [STARTER, saved({ id: "t", kind: "trial" }), saved({ id: "r", status: "retired" })] }),
-    [STARTER],
+  // An ended plan is not on offer. The free trial is, and it is read with the paid plans, but it is never a row.
+  const mixed = { plans: [TRIAL, STARTER, saved({ id: "r", status: "retired" }), saved({ id: "x", kind: "other" })] };
+  assert.deepEqual(savedPlansOf(mixed), [TRIAL, STARTER]);
+  assert.deepEqual(plansFormOf(mixed).rows.map((one) => one.id), ["p1"]);
+});
+
+// ============================================
+// The free trial
+// ============================================
+
+/** The trial entry of a save, or null when the save carries none. */
+function trialSent(save: ReturnType<typeof plansSaveOf>) {
+  assert.ok(save.kind === "send");
+  const trials = save.plans.filter((plan) => plan.kind === "trial");
+  assert.ok(trials.length <= 1);
+  return trials[0] ?? null;
+}
+
+test("the words of the free trial's part are the design's", () => {
+  assert.deepEqual(TRIAL_WORDS, {
+    name: "Free trial",
+    offer: "Offer a free trial",
+    uses: "Uses in the trial",
+    endTitle: "Stop offering the free trial?",
+    end: "Stop offering it",
+    ending: "The free trial stops being offered when you save.",
+  });
+  assert.equal(trialNote(), "A buyer can try it once, for 7 days. Nothing is charged, and you are not paid for these uses.");
+  // The number of days is the capabilities' to say.
+  assert.equal(
+    trialNote({ ...DEFAULT_PLAN_LIMITS, trialDays: 14 }),
+    "A buyer can try it once, for 14 days. Nothing is charged, and you are not paid for these uses.",
   );
+  assert.equal(
+    trialNote({ ...DEFAULT_PLAN_LIMITS, trialDays: 1 }),
+    "A buyer can try it once, for 1 day. Nothing is charged, and you are not paid for these uses.",
+  );
+});
+
+test("the trial of a form is the listing's own, and a listing with no trial has none in its form", () => {
+  // No trial: the form is the one it was, key for key.
+  assert.equal("trial" in plansFormOf({ plans: [STARTER] }), false);
+  assert.equal("trial" in emptyPlansForm(), false);
+  assert.deepEqual(trialFormOf(emptyPlansForm()), { on: false, id: null, uses: "" });
+  assert.equal(savedTrialOf([STARTER, PRO]), null);
+  assert.equal(savedTrialOf(null), null);
+
+  const form = plansFormOf({ plans: [TRIAL, STARTER, PRO] });
+  assert.deepEqual(form.trial, { on: true, id: "t1", uses: "20" });
+  assert.deepEqual(form.rows.map((one) => one.id), ["p1", "p2"]);
+  assert.equal(savedTrialOf([TRIAL, STARTER]), TRIAL);
+  // A trial that is no longer on offer is not the listing's trial.
+  assert.equal("trial" in plansFormOf({ plans: [{ ...TRIAL, status: "retired" }, STARTER] }), false);
+
+  // The switch and the box change; the id is the trial's own, and the rows are untouched.
+  const off = withTrial(form, { on: false });
+  assert.deepEqual(off.trial, { on: false, id: "t1", uses: "20" });
+  assert.equal(off.rows, form.rows);
+  assert.deepEqual(withTrial(off, { on: true, uses: "30" }).trial, { on: true, id: "t1", uses: "30" });
+  assert.deepEqual(withTrial(emptyPlansForm(), { on: true }), { loaded: true, rows: [], trial: { on: true, id: null, uses: "" } });
+  // The trial does not count among the four paid plans.
+  let full = plansFormOf({ plans: [TRIAL] });
+  for (let i = 0; i < 4; i += 1) full = addPlanRow(full);
+  assert.equal(full.rows.length, 4);
+  assert.equal(canAddPlan(plansFormOf({ plans: [TRIAL, STARTER, PRO] })), true);
+});
+
+test("the trial's box is checked only while the switch is on", () => {
+  const typed = (uses: string, on = true) => checkTrial({ trial: { on, id: null, uses } });
+  assert.deepEqual(typed("20"), { ok: true, plan: { kind: "trial", priceCents: 0, includedUses: 20, extraUsePriceCents: null } });
+  assert.deepEqual(typed(" 1 "), { ok: true, plan: { kind: "trial", priceCents: 0, includedUses: 1, extraUsePriceCents: null } });
+  assert.deepEqual(typed("50"), { ok: true, plan: { kind: "trial", priceCents: 0, includedUses: 50, extraUsePriceCents: null } });
+  assert.deepEqual(typed(""), { ok: false, error: "Enter how many uses the trial includes." });
+  assert.deepEqual(typed("   "), { ok: false, error: "Enter how many uses the trial includes." });
+  for (const text of ["x", "2.5", "-1", "1e1"]) {
+    assert.deepEqual(typed(text), { ok: false, error: "Enter the uses as a whole number, like 20." }, text);
+  }
+  for (const text of ["0", "51", "99999999999"]) {
+    assert.deepEqual(typed(text), { ok: false, error: "A free trial includes between 1 and 50 uses." }, text);
+  }
+  // The most is the number the capabilities give.
+  const limits = { ...DEFAULT_PLAN_LIMITS, maxTrialUses: 30 };
+  assert.deepEqual(checkTrial({ trial: { on: true, id: null, uses: "31" } }, limits), {
+    ok: false,
+    error: "A free trial includes between 1 and 30 uses.",
+  });
+  assert.equal(checkTrial({ trial: { on: true, id: null, uses: "30" } }, limits).ok, true);
+  // Off: nothing is read, whatever sits in the box. No trial in the form: the same.
+  assert.deepEqual(typed("x", false), { ok: true, plan: null });
+  assert.deepEqual(typed("", false), { ok: true, plan: null });
+  assert.deepEqual(checkTrial({}), { ok: true, plan: null });
+  // A trial the listing offers keeps its id; a trial never carries a name.
+  const kept = checkTrial({ trial: { on: true, id: "t1", uses: "25" } });
+  assert.deepEqual(kept, { ok: true, plan: { id: "t1", kind: "trial", priceCents: 0, includedUses: 25, extraUsePriceCents: null } });
+  assert.ok(kept.ok && kept.plan && !("name" in kept.plan));
+});
+
+test("the trial is sent only while the switch is on, as one more entry after the paid plans", () => {
+  const listed = [STARTER, PRO];
+  const form = plansFormOf({ plans: listed });
+  // Off, or never touched: no entry is a trial, and nothing is sent at all when nothing else changed.
+  assert.deepEqual(plansSaveOf({ sell: PER_USE, form, saved: listed }), { kind: "none" });
+  assert.deepEqual(plansSaveOf({ sell: PER_USE, form: withTrial(form, { on: false, uses: "20" }), saved: listed }), { kind: "none" });
+  const offEdited = plansSaveOf({
+    sell: PER_USE,
+    form: withPlanRow(withTrial(form, { on: false, uses: "20" }), "p1", { price: "10.00" }),
+    saved: listed,
+  });
+  assert.equal(trialSent(offEdited), null);
+
+  // On: the whole set, the four fields of a trial, no id and no name for a new one.
+  const on = plansSaveOf({ sell: PER_USE, form: withTrial(form, { on: true, uses: "20" }), saved: listed });
+  assert.deepEqual(on, {
+    kind: "send",
+    plans: [
+      { id: "p1", kind: "paid", name: "Starter", priceCents: 900, includedUses: 500, extraUsePriceCents: null },
+      { id: "p2", kind: "paid", name: "Pro", priceCents: 2900, includedUses: 2000, extraUsePriceCents: 7 },
+      { kind: "trial", priceCents: 0, includedUses: 20, extraUsePriceCents: null },
+    ],
+    ended: [],
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(trialSent(on))), { kind: "trial", priceCents: 0, includedUses: 20, extraUsePriceCents: null });
+
+  // A listing with no paid plan can offer a trial, and a new listing too.
+  assert.deepEqual(plansSaveOf({ sell: PER_USE, form: withTrial(emptyPlansForm(), { on: true, uses: "5" }), saved: [] }), {
+    kind: "send",
+    plans: [{ kind: "trial", priceCents: 0, includedUses: 5, extraUsePriceCents: null }],
+    ended: [],
+  });
+  // Off Pay per use, and with plans that were never read: nothing, as for any plan.
+  const trialOn = withTrial(form, { on: true, uses: "20" });
+  assert.deepEqual(plansSaveOf({ sell: { sells: "use", choice: "monthly" }, form: trialOn, saved: listed }), { kind: "none" });
+  assert.deepEqual(plansSaveOf({ sell: PER_USE, form: trialOn, saved: null }), { kind: "none" });
+  assert.deepEqual(plansSaveOf({ sell: PER_USE, form: { ...trialOn, loaded: false }, saved: listed }), { kind: "none" });
+});
+
+test("a trial that came from the server keeps its id, and is changed in place", () => {
+  const listed = [TRIAL, STARTER, PRO];
+  const form = plansFormOf({ plans: listed });
+  // Untouched: nothing is sent, so a listing with a trial is not saved again for nothing.
+  assert.deepEqual(plansSaveOf({ sell: PER_USE, form, saved: listed }), { kind: "none" });
+
+  const more = plansSaveOf({ sell: PER_USE, form: withTrial(form, { uses: "30" }), saved: listed });
+  assert.deepEqual(trialSent(more), { id: "t1", kind: "trial", priceCents: 0, includedUses: 30, extraUsePriceCents: null });
+  assert.ok(more.kind === "send");
+  assert.deepEqual(more.ended, []);
+
+  // A change of a paid row alone still carries the trial, with its id: every plan on offer is sent or ended.
+  const paidOnly = plansSaveOf({ sell: PER_USE, form: withPlanRow(form, "p1", { price: "10.00" }), saved: listed });
+  assert.deepEqual(trialSent(paidOnly), { id: "t1", kind: "trial", priceCents: 0, includedUses: 20, extraUsePriceCents: null });
+  assert.ok(paidOnly.kind === "send");
+  assert.deepEqual(paidOnly.ended, []);
+
+  // Off and on again before the save: the same trial, never a second one.
+  const again = withTrial(withTrial(form, { on: false }), { on: true });
+  assert.deepEqual(plansSaveOf({ sell: PER_USE, form: again, saved: listed }), { kind: "none" });
+});
+
+test("switching the trial off ends it by name, and never by leaving it out", () => {
+  const listed = [TRIAL, STARTER, PRO];
+  const off = withTrial(plansFormOf({ plans: listed }), { on: false });
+  const save = plansSaveOf({ sell: PER_USE, form: off, saved: listed });
+  assert.deepEqual(save, {
+    kind: "send",
+    plans: [
+      { id: "p1", kind: "paid", name: "Starter", priceCents: 900, includedUses: 500, extraUsePriceCents: null },
+      { id: "p2", kind: "paid", name: "Pro", priceCents: 2900, includedUses: 2000, extraUsePriceCents: 7 },
+    ],
+    ended: ["t1"],
+  });
+  assert.equal(trialSent(save), null);
+  // With a row taken away in the same save: both are named, the paid plan first.
+  const both = plansSaveOf({ sell: PER_USE, form: removePlanRow(off, "p1"), saved: listed });
+  assert.ok(both.kind === "send");
+  assert.deepEqual(both.ended, ["p1", "t1"]);
+  // Only a trial: the empty set, and its name.
+  assert.deepEqual(plansSaveOf({ sell: PER_USE, form: withTrial(plansFormOf({ plans: [TRIAL] }), { on: false }), saved: [TRIAL] }), {
+    kind: "send",
+    plans: [],
+    ended: ["t1"],
+  });
+  // Whatever was left in the box of a trial that is switched off is not this save's to refuse.
+  const junk = plansSaveOf({ sell: PER_USE, form: withTrial(off, { uses: "x" }), saved: listed });
+  assert.ok(junk.kind === "send");
+  assert.deepEqual(junk.ended, ["t1"]);
+
+  // A trial this form never showed (a later read brought it) is neither sent nor ended by it: the API then
+  // answers that the plans changed, and Reload is offered.
+  const older = plansFormOf({ plans: [STARTER, PRO] });
+  const stale = plansSaveOf({ sell: PER_USE, form: withPlanRow(older, "p1", { price: "10.00" }), saved: listed });
+  assert.ok(stale.kind === "send");
+  assert.deepEqual(stale.ended, []);
+  assert.equal(trialSent(stale), null);
+  const staleOn = plansSaveOf({ sell: PER_USE, form: withTrial(older, { on: true, uses: "5" }), saved: listed });
+  assert.deepEqual(trialSent(staleOn), { kind: "trial", priceCents: 0, includedUses: 5, extraUsePriceCents: null });
+  assert.ok(staleOn.kind === "send");
+  assert.deepEqual(staleOn.ended, []);
+});
+
+test("the four paid rows are what they were, with a trial beside them or without", () => {
+  const paid = [STARTER, PRO];
+  const edit = (form: PlansForm) =>
+    withPlanRow(addPlanRow(withPlanRow(removePlanRow(form, "p1"), "p2", { price: "39.00" })), "new-1", {
+      name: "Team",
+      price: "99",
+      uses: "5000",
+      ending: "extra",
+      extraPrice: "0.05",
+    });
+  const without = plansSaveOf({ sell: PER_USE, form: edit(plansFormOf({ plans: paid })), saved: paid });
+  const beside = plansSaveOf({ sell: PER_USE, form: edit(plansFormOf({ plans: [TRIAL, ...paid] })), saved: [TRIAL, ...paid] });
+  assert.ok(without.kind === "send" && beside.kind === "send");
+  assert.deepEqual(without.plans.map((plan) => plan.kind), ["paid", "paid"]);
+  // The same paid entries, in the same places, and the same plan ended.
+  assert.deepEqual(beside.plans.filter((plan) => plan.kind === "paid"), without.plans);
+  assert.deepEqual(beside.plans.slice(0, without.plans.length), without.plans);
+  assert.deepEqual(beside.ended, without.ended);
+  assert.deepEqual(without.ended, ["p1"]);
+});
+
+test("a trial that cannot be sent stops the save, under its own box", () => {
+  const listed = [STARTER];
+  const form = withTrial(plansFormOf({ plans: listed }), { on: true, uses: "" });
+  const save = plansSaveOf({ sell: PER_USE, form, saved: listed });
+  assert.deepEqual(save, { kind: "invalid", errors: { rows: {}, trial: "Enter how many uses the trial includes." } });
+  assert.ok(save.kind === "invalid");
+  assert.equal(hasPlanErrors(save.errors), true);
+  assert.equal(trialProblemOf(form, save.errors), "Enter how many uses the trial includes.");
+  assert.equal(plansProblem({ sell: PER_USE, form, saved: listed }), "Free trial: Enter how many uses the trial includes.");
+  // A row that is wrong is named first, and both are kept.
+  const two = withPlanRow(withTrial(form, { uses: "500" }), "p1", { price: "" });
+  const both = plansSaveOf({ sell: PER_USE, form: two, saved: listed });
+  assert.deepEqual(both, {
+    kind: "invalid",
+    errors: { rows: { 0: { price: "Enter a price for 30 days." } }, trial: "A free trial includes between 1 and 50 uses." },
+  });
+  assert.equal(plansProblem({ sell: PER_USE, form: two, saved: listed }), "Plan 1: Enter a price for 30 days.");
+  // A trial exactly as the server gave it is not this save's to refuse, even past a limit that went down.
+  const big = [{ ...TRIAL, includedUses: 60 }];
+  assert.deepEqual(plansSaveOf({ sell: PER_USE, form: plansFormOf({ plans: big }), saved: big }), { kind: "none" });
+  assert.equal(plansSaveOf({ sell: PER_USE, form: withTrial(plansFormOf({ plans: big }), { uses: "61" }), saved: big }).kind, "invalid");
+});
+
+test("the API's sentence about the trial goes under the trial's box", () => {
+  // The trial is the entry after the rows: with two rows it is plans[2].
+  const form = withTrial(plansFormOf({ plans: [STARTER, PRO] }), { on: true, uses: "60" });
+  const refused = planFieldErrors({ "plans[2].includedUses": "A free trial includes between 1 and 50 uses." });
+  assert.equal(hasPlanErrors(refused), true);
+  assert.equal(trialProblemOf(form, refused), "A free trial includes between 1 and 50 uses.");
+  // Every other field the API can name on a trial is said there too, since a trial has one box.
+  for (const [field, sentence] of [
+    ["kind", "A listing can have one free trial."],
+    ["id", "This plan is no longer on the listing. Reload the page and try again."],
+    ["priceCents", "A free trial has no price."],
+    ["extraUsePriceCents", "A free trial has no price for an extra use. It stops when its uses are gone."],
+  ] as const) {
+    assert.equal(trialProblemOf(form, planFieldErrors({ [`plans[2].${field}`]: sentence })), sentence, field);
+  }
+  // A sentence about a row is the row's, and with no row the trial is plans[0].
+  assert.equal(trialProblemOf(form, planFieldErrors({ "plans[1].includedUses": "x" })), null);
+  const alone = withTrial(emptyPlansForm(), { on: true, uses: "60" });
+  assert.equal(trialProblemOf(alone, planFieldErrors({ "plans[0].includedUses": "x" })), "x");
+  // The place is the save's own: wherever a save puts the trial is where its refusal is read from.
+  const sendable = withTrial(plansFormOf({ plans: [STARTER, PRO] }), { on: true, uses: "20" });
+  const save = plansSaveOf({ sell: PER_USE, form: sendable, saved: [STARTER, PRO] });
+  assert.ok(save.kind === "send");
+  const at = save.plans.findIndex((plan) => plan.kind === "trial");
+  assert.equal(at, 2);
+  assert.equal(trialProblemOf(sendable, planFieldErrors({ [`plans[${at}].includedUses`]: "x" })), "x");
+  // Nothing wrong, or the switch off: nothing under the box.
+  assert.equal(trialProblemOf(form, noPlanErrors()), null);
+  assert.equal(trialProblemOf(withTrial(form, { on: false }), { rows: {}, trial: "x" }), null);
+  assert.equal(trialProblemOf(emptyPlansForm(), refused), null);
+});
+
+test("the on-sale line of a trial, under the lines of the paid plans", () => {
+  assert.equal(trialSaleLine(TRIAL), "Free trial. 20 uses for 7 days. 3 people on it now.");
+  assert.equal(trialSaleLine({ ...TRIAL, subscribers: 1 }), "Free trial. 20 uses for 7 days. 1 person on it now.");
+  assert.equal(trialSaleLine({ ...TRIAL, subscribers: 0 }), "Free trial. 20 uses for 7 days. Nobody on it now.");
+  assert.equal(trialSaleLine({ includedUses: 1, subscribers: 1234 }), "Free trial. 1 use for 7 days. 1,234 people on it now.");
+  assert.equal(trialSaleLine(TRIAL, { ...DEFAULT_PLAN_LIMITS, trialDays: 14 }), "Free trial. 20 uses for 14 days. 3 people on it now.");
+
+  const listing = { sells: "use", pricingModel: "per_request", plans: [TRIAL, STARTER, PRO] };
+  assert.deepEqual(planSaleLines(listing), [
+    { id: "p1", line: "Starter. $9.00 for 30 days. 500 uses. No subscribers." },
+    { id: "p2", line: "Pro. $29.00 for 30 days. 2,000 uses. 12 subscribers." },
+    { id: "t1", line: "Free trial. 20 uses for 7 days. 3 people on it now." },
+  ]);
+  assert.deepEqual(planSaleLines({ ...listing, plans: [TRIAL] }, { ...DEFAULT_PLAN_LIMITS, trialDays: 3 }), [
+    { id: "t1", line: "Free trial. 20 uses for 3 days. 3 people on it now." },
+  ]);
+  // Another price, copies: no line.
+  assert.deepEqual(planSaleLines({ ...listing, pricingModel: "monthly" }), []);
+  assert.deepEqual(planSaleLines({ ...listing, sells: "copies" }), []);
+});
+
+test("switching the trial off while people are on it asks first; with nobody on it, and for a new one, it does not", () => {
+  const form = plansFormOf({ plans: [TRIAL, STARTER] });
+  assert.deepEqual(endTrialDialog(form, [TRIAL, STARTER]), {
+    title: "Stop offering the free trial?",
+    description: "3 people are on the free trial. They keep it until its 7 days end.",
+    confirmLabel: "Stop offering it",
+  });
+  const one = [{ ...TRIAL, subscribers: 1 }];
+  assert.equal(endTrialDialog(plansFormOf({ plans: one }), one)?.description, "1 person is on the free trial. They keep it until its 7 days end.");
+  assert.equal(
+    endTrialDialog(form, [{ ...TRIAL, subscribers: 1200 }], { ...DEFAULT_PLAN_LIMITS, trialDays: 14 })?.description,
+    "1,200 people are on the free trial. They keep it until its 14 days end.",
+  );
+  const nobody = [{ ...TRIAL, subscribers: 0 }];
+  assert.equal(endTrialDialog(plansFormOf({ plans: nobody }), nobody), null);
+  assert.equal(endTrialDialog(withTrial(emptyPlansForm(), { on: true, uses: "20" }), []), null);
+  assert.equal(endTrialDialog(form, null), null);
+  // The count is the trial's own: people on a paid plan are not asked about here.
+  assert.equal(endTrialDialog(withTrial(plansFormOf({ plans: [PRO] }), { on: true }), [PRO]), null);
+
+  // Until the save it is only switched off, and its box says so. The lines of the paid plans stay theirs.
+  const off = withTrial(form, { on: false });
+  assert.equal(trialEndingLine(off, [TRIAL, STARTER]), "The free trial stops being offered when you save.");
+  assert.deepEqual(endingPlanLines(off, [TRIAL, STARTER]), []);
+  assert.equal(trialEndingLine(form, [TRIAL, STARTER]), null);
+  assert.deepEqual(endingPlanLines(removePlanRow(off, "p1"), [TRIAL, STARTER]), ["Starter ends when you save."]);
+  assert.equal(trialEndingLine(removePlanRow(off, "p1"), [TRIAL, STARTER]), "The free trial stops being offered when you save.");
+  // Switched on again before the save: nothing ends.
+  assert.equal(trialEndingLine(withTrial(off, { on: true }), [TRIAL, STARTER]), null);
+  // A trial that was never saved ends nothing, and neither does one whose listing was not read.
+  assert.equal(trialEndingLine(withTrial(withTrial(emptyPlansForm(), { on: true }), { on: false }), []), null);
+  assert.equal(trialEndingLine(off, null), null);
+  assert.equal(trialEndingLine({ ...off, loaded: false }, [TRIAL, STARTER]), null);
+});
+
+test("a trial changes nothing for the people on the paid plans", () => {
+  const form = plansFormOf({ plans: [TRIAL, PRO] });
+  // The dialog of a paid plan counts its own subscribers, and a change of the trial is no change of a plan.
+  assert.match(endPlanDialog({ id: "p2" }, [TRIAL, PRO])?.description ?? "", /^12 subscribers keep this plan/);
+  // A row is a paid plan: the trial's id opens no paid plan's dialog, though people are on the trial.
+  assert.equal(endPlanDialog({ id: "t1" }, [TRIAL, PRO]), null);
+  assert.equal(planChangedNote(withTrial(form, { uses: "30" }).rows[0]!, [TRIAL, PRO]), null);
+  // Moving away from Pay per use: what was paid for is said of the paid plans, and the people on the trial
+  // are told apart, in the words of the dialog that stops offering it.
+  const onSale = { sells: "use", pricingModel: "per_request", status: "published" };
+  const free = { sells: "use", choice: "free" } as const;
+  assert.equal(
+    plansKeptLine({ ...onSale, plans: [TRIAL, PRO] }, free),
+    "12 subscribers keep their plan until the 30 days they paid for end and are not charged again. 3 people are on the free trial. They keep it until its 7 days end.",
+  );
+  assert.equal(plansKeptLine({ ...onSale, plans: [TRIAL] }, free), "3 people are on the free trial. They keep it until its 7 days end.");
+  assert.equal(
+    plansKeptLine({ ...onSale, plans: [{ ...TRIAL, subscribers: 1 }] }, free, { ...DEFAULT_PLAN_LIMITS, trialDays: 14 }),
+    "1 person is on the free trial. They keep it until its 14 days end.",
+  );
+  // Nobody on the trial: only the paid plans are said, and with nobody on anything, nothing.
+  assert.equal(
+    plansKeptLine({ ...onSale, plans: [{ ...TRIAL, subscribers: 0 }, PRO] }, free),
+    "12 subscribers keep their plan until the 30 days they paid for end and are not charged again.",
+  );
+  assert.equal(plansKeptLine({ ...onSale, plans: [{ ...TRIAL, subscribers: 0 }] }, free), null);
+  // Staying on Pay per use changes nothing for them.
+  assert.equal(plansKeptLine({ ...onSale, plans: [TRIAL, PRO] }, PER_USE), null);
 });
 
 test("a save sends the whole set: ids kept, the extra price always said, a removed row absent and named as ended", () => {
@@ -412,7 +793,7 @@ test("the API's sentences go under the field of the row they are about", () => {
     "plans[1].includedUses": "At $9.00 a plan can include at most 900 uses.",
     "plans[1].extraUsePriceCents": "The price for each extra use must be at least $0.05.",
     "plans[2].id": "This plan is no longer on the listing. Reload the page and try again.",
-    "plans[3].kind": "Free trials are not available yet.",
+    "plans[3].kind": "A plan is either paid or a free trial.",
   });
   assert.deepEqual(errors, {
     set: "A listing can have at most 4 plans.",
@@ -423,7 +804,7 @@ test("the API's sentences go under the field of the row they are about", () => {
         extraPrice: "The price for each extra use must be at least $0.05.",
       },
       2: { row: "This plan is no longer on the listing. Reload the page and try again." },
-      3: { row: "Free trials are not available yet." },
+      3: { row: "A plan is either paid or a free trial." },
     },
   });
   assert.equal(hasPlanErrors(errors), true);
@@ -589,6 +970,16 @@ test("no sentence here has an em dash, a raw error code, or the word unlimited o
     planSaleLine(PRO),
     endPlanDialog({ id: "p2" }, [PRO])?.description ?? "",
     ...endingPlanLines(emptyPlansForm(), [PRO]),
+    ...Object.values(TRIAL_WORDS),
+    trialNote(),
+    trialSaleLine(TRIAL),
+    trialSaleLine({ ...TRIAL, subscribers: 0 }),
+    endTrialDialog(plansFormOf({ plans: [TRIAL] }), [TRIAL])?.description ?? "",
+    ...["", "x", "99"].map((uses) => {
+      const checked = checkTrial({ trial: { on: true, id: null, uses } });
+      return checked.ok ? "" : checked.error;
+    }),
+    plansProblem({ sell: PER_USE, form: withTrial(emptyPlansForm(), { on: true }), saved: [] }) ?? "",
     plansKeptLine({ sells: "use", pricingModel: "per_request", status: "published", plans: [PRO] }, { sells: "use", choice: "free" }) ?? "",
   ];
   const emDash = String.fromCharCode(0x2014);

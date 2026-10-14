@@ -10,6 +10,12 @@
  *
  * Every amount is whole cents, read from what was typed digit by digit. What
  * a creator earns comes from `splitCents`, the API's own integer rule.
+ *
+ * A listing can also offer one free trial: some uses for some days, at no
+ * price, that a buyer starts once. It is a plan of its own kind in the same
+ * set, switched on and off under the paid rows and saved in the same call.
+ * It is not "Try it", the few free messages a day anyone gets on a listing's
+ * page, which is set elsewhere.
  */
 import { splitCents } from "@wheelsai/shared/revenue";
 
@@ -40,6 +46,17 @@ export const PLAN_WORDS = {
   notSaved: "Your listing was saved. Its plans were not.",
 } as const;
 
+/** The words of the free trial's part of the block. Its sentences that carry a number are functions below. */
+export const TRIAL_WORDS = {
+  /** What a trial is called everywhere. A creator does not name it. */
+  name: "Free trial",
+  offer: "Offer a free trial",
+  uses: "Uses in the trial",
+  endTitle: "Stop offering the free trial?",
+  end: "Stop offering it",
+  ending: "The free trial stops being offered when you save.",
+} as const;
+
 // ============================================
 // Limits
 // ============================================
@@ -53,11 +70,16 @@ export interface PlanLimits {
   minPlanPriceCents: number;
   /** The smallest price of one use past the included ones, in cents. */
   minExtraUsePriceCents: number;
+  /** The most uses a free trial can include. */
+  maxTrialUses: number;
+  /** How many days a free trial lasts from its start. */
+  trialDays: number;
 }
 
 /**
  * The numbers of apps/api/src/services/listingPlans.ts (MAX_PAID_PLANS,
- * MAX_INCLUDED_USES, MIN_PLAN_PRICE_CENTS, MIN_EXTRA_USE_PRICE_CENTS), used
+ * MAX_INCLUDED_USES, MIN_PLAN_PRICE_CENTS, MIN_EXTRA_USE_PRICE_CENTS,
+ * MAX_TRIAL_USES, TRIAL_DAYS), used
  * only when `GET /api/capabilities` could not be read. The rule that a plan
  * costs at least a cent for each included use is not here on purpose: the
  * API says it in a sentence, and that sentence is shown under the field.
@@ -67,6 +89,8 @@ export const DEFAULT_PLAN_LIMITS: PlanLimits = {
   maxIncludedUses: 100_000,
   minPlanPriceCents: 100,
   minExtraUsePriceCents: 5,
+  maxTrialUses: 50,
+  trialDays: 7,
 };
 
 /** The longest name of a plan, counted after trimming. The API's MAX_PLAN_NAME_CHARS. */
@@ -85,6 +109,8 @@ export function planLimitsOf(
           maxIncludedUses?: unknown;
           minPlanPriceCents?: unknown;
           minExtraUsePriceCents?: unknown;
+          maxTrialUses?: unknown;
+          trialDays?: unknown;
         } | null;
       }
     | null
@@ -96,6 +122,8 @@ export function planLimitsOf(
     maxIncludedUses: wholePositive(paidUse?.maxIncludedUses) ?? DEFAULT_PLAN_LIMITS.maxIncludedUses,
     minPlanPriceCents: wholePositive(paidUse?.minPlanPriceCents) ?? DEFAULT_PLAN_LIMITS.minPlanPriceCents,
     minExtraUsePriceCents: wholePositive(paidUse?.minExtraUsePriceCents) ?? DEFAULT_PLAN_LIMITS.minExtraUsePriceCents,
+    maxTrialUses: wholePositive(paidUse?.maxTrialUses) ?? DEFAULT_PLAN_LIMITS.maxTrialUses,
+    trialDays: wholePositive(paidUse?.trialDays) ?? DEFAULT_PLAN_LIMITS.trialDays,
   };
 }
 
@@ -154,6 +182,16 @@ export interface PlanRow {
   extraPrice: string;
 }
 
+/** The free trial as it is set: a switch and one box. */
+export interface TrialForm {
+  /** The switch "Offer a free trial". */
+  on: boolean;
+  /** The id of the trial the listing already offers: it is changed in place, or ended by this id. null for a new one. */
+  id: string | null;
+  /** As typed: how many uses the trial includes. Read only while the switch is on. */
+  uses: string;
+}
+
 export interface PlansForm {
   /**
    * Whether the listing's plans were read. false: nothing is shown and
@@ -162,20 +200,55 @@ export interface PlansForm {
    */
   loaded: boolean;
   rows: PlanRow[];
+  /** The free trial. Absent for a listing that offers none and whose switch was never touched. */
+  trial?: TrialForm;
 }
 
 /** The plans a listing has, as `getMyListings` gives them. */
 export type SavedPlan = ListingPlan;
 
 /**
- * The listing's paid plans that are on offer, in the order a buyer sees
- * them. No listing yet: none. null when the listing came without its plans,
- * which is not the same as having none.
+ * The listing's plans that are on offer: its paid plans in the order a buyer
+ * sees them, and its free trial if it offers one. No listing yet: none. null
+ * when the listing came without its plans, which is not the same as having
+ * none.
+ *
+ * The trial is among them because a save must either send or end every plan
+ * on offer: one that was left out here would be in neither list, and the API
+ * would refuse the save.
  */
 export function savedPlansOf(listing: { plans?: readonly SavedPlan[] | null } | null | undefined): SavedPlan[] | null {
   if (!listing) return [];
   if (!Array.isArray(listing.plans)) return null;
-  return listing.plans.filter((plan) => plan.kind === "paid" && plan.status === "active");
+  return listing.plans.filter((plan) => (plan.kind === "paid" || plan.kind === "trial") && plan.status === "active");
+}
+
+/** The paid plans among what was read: the ones that are rows. */
+function paidOf(saved: readonly SavedPlan[]): SavedPlan[] {
+  return saved.filter((plan) => plan.kind === "paid");
+}
+
+/** The free trial among what was read, or null. A listing has at most one. */
+export function savedTrialOf(saved: readonly SavedPlan[] | null | undefined): SavedPlan | null {
+  return (saved ?? []).find((plan) => plan.kind === "trial") ?? null;
+}
+
+const NO_TRIAL: TrialForm = { on: false, id: null, uses: "" };
+
+/** The trial of a form: switched off, with nothing typed, when the form has none. */
+export function trialFormOf(form: Pick<PlansForm, "trial">): TrialForm {
+  return form.trial ?? NO_TRIAL;
+}
+
+function trialOfSaved(saved: readonly SavedPlan[]): TrialForm | null {
+  const trial = savedTrialOf(saved);
+  return trial ? { on: true, id: trial.id, uses: String(trial.includedUses) } : null;
+}
+
+/** The form with the trial's switch or its box changed. Its id is the trial's own and never changes. */
+export function withTrial(form: PlansForm, patch: Partial<Pick<TrialForm, "on" | "uses">>): PlansForm {
+  const trial = trialFormOf(form);
+  return { ...form, trial: { ...trial, ...patch, id: trial.id } };
 }
 
 function rowOf(plan: SavedPlan): PlanRow {
@@ -199,7 +272,10 @@ export function emptyPlansForm(): PlansForm {
 /** The rows of the plans a listing has now. A listing that came without its plans is not loaded. */
 export function plansFormOf(listing: { plans?: readonly SavedPlan[] | null } | null | undefined): PlansForm {
   const saved = savedPlansOf(listing);
-  return saved === null ? { loaded: false, rows: [] } : { loaded: true, rows: saved.map(rowOf) };
+  if (saved === null) return { loaded: false, rows: [] };
+  const trial = trialOfSaved(saved);
+  // A listing with no trial has no trial in its form: it is the form it was.
+  return { loaded: true, rows: paidOf(saved).map(rowOf), ...(trial && { trial }) };
 }
 
 export function canAddPlan(form: PlansForm, limits: PlanLimits = DEFAULT_PLAN_LIMITS): boolean {
@@ -235,8 +311,13 @@ export type PlanRowErrors = Partial<Record<PlanField, string>>;
 export interface PlanErrors {
   /** A problem with the set as a whole. */
   set?: string;
-  /** Problems of each row, by its place in the list (0 first). */
+  /**
+   * Problems of each entry, by its place in the set that is sent (0 first):
+   * the rows in their order, then the free trial when it is on.
+   */
   rows: Record<number, PlanRowErrors>;
+  /** What is wrong with the trial's box, found here before anything was sent. */
+  trial?: string;
 }
 
 export function noPlanErrors(): PlanErrors {
@@ -244,7 +325,7 @@ export function noPlanErrors(): PlanErrors {
 }
 
 export function hasPlanErrors(errors: PlanErrors): boolean {
-  return errors.set !== undefined || Object.keys(errors.rows).length > 0;
+  return errors.set !== undefined || errors.trial !== undefined || Object.keys(errors.rows).length > 0;
 }
 
 type RowCheck = { ok: true; plan: ListingPlanInput } | { ok: false; errors: PlanRowErrors };
@@ -319,6 +400,29 @@ export function checkPlans(form: Pick<PlansForm, "rows">, limits: PlanLimits = D
   return hasPlanErrors(errors) ? { ok: false, errors } : { ok: true, plans };
 }
 
+type TrialCheck = { ok: true; plan: ListingPlanInput | null } | { ok: false; error: string };
+
+/**
+ * The trial as the API takes it: one more entry of the set, of kind "trial",
+ * with no price, no price for an extra use and no name. null while the
+ * switch is off, whatever sits in the box. Or the sentence under the box.
+ */
+export function checkTrial(form: Pick<PlansForm, "trial">, limits: PlanLimits = DEFAULT_PLAN_LIMITS): TrialCheck {
+  const trial = trialFormOf(form);
+  if (!trial.on) return { ok: true, plan: null };
+  const typed = trial.uses.trim();
+  const includedUses = usesOf(typed);
+  if (!typed) return { ok: false, error: "Enter how many uses the trial includes." };
+  if (includedUses === null && !/^\d+$/.test(typed)) return { ok: false, error: "Enter the uses as a whole number, like 20." };
+  if (includedUses === null || includedUses < 1 || includedUses > limits.maxTrialUses) {
+    return { ok: false, error: `A free trial includes between 1 and ${count(limits.maxTrialUses)} uses.` };
+  }
+  return {
+    ok: true,
+    plan: { ...(trial.id !== null && { id: trial.id }), kind: "trial", priceCents: 0, includedUses, extraUsePriceCents: null },
+  };
+}
+
 // ============================================
 // What a save sends
 // ============================================
@@ -348,11 +452,17 @@ export function sellsWithPlans(sell: Pick<SellForm, "sells" | "choice">): boolea
   return sell.sells === "use" && sell.choice === "per_use";
 }
 
-function sameAsSaved(plans: readonly ListingPlanInput[], saved: readonly SavedPlan[]): boolean {
+function sameAsSaved(plans: readonly ListingPlanInput[], trial: ListingPlanInput | null, saved: readonly SavedPlan[]): boolean {
+  const paid = paidOf(saved);
+  const trialBefore = savedTrialOf(saved);
+  // The trial has two things of its own: whether it is offered, and its uses.
+  const sameTrial =
+    trial === null ? trialBefore === null : trialBefore !== null && trial.id === trialBefore.id && trial.includedUses === trialBefore.includedUses;
   return (
-    plans.length === saved.length &&
+    sameTrial &&
+    plans.length === paid.length &&
     plans.every((plan, index) => {
-      const before = saved[index]!;
+      const before = paid[index]!;
       return (
         plan.id === before.id &&
         plan.name === before.name.trim() &&
@@ -365,13 +475,29 @@ function sameAsSaved(plans: readonly ListingPlanInput[], saved: readonly SavedPl
 }
 
 /**
+ * Whether this form switched off the trial the listing offers: the trial the
+ * form was made from, by its id, with its switch off. A trial the form never
+ * showed is not ended by it.
+ */
+function trialSwitchedOff(form: Pick<PlansForm, "trial">, saved: readonly SavedPlan[]): SavedPlan | null {
+  const before = savedTrialOf(saved);
+  const trial = trialFormOf(form);
+  return before !== null && !trial.on && trial.id === before.id ? before : null;
+}
+
+/**
  * The ids of the plans this screen showed whose rows were taken away: the
  * plans their creator ended here. A plan the screen never showed is never
  * among them, so a plan someone else added is never ended by this save.
  */
-function endedPlanIds(form: Pick<PlansForm, "rows">, saved: readonly SavedPlan[]): string[] {
+function endedPlanIds(form: Pick<PlansForm, "rows" | "trial">, saved: readonly SavedPlan[]): string[] {
   const kept = new Set(form.rows.map((row) => row.id));
-  return saved.filter((plan) => !kept.has(plan.id)).map((plan) => plan.id);
+  const ended = paidOf(saved)
+    .filter((plan) => !kept.has(plan.id))
+    .map((plan) => plan.id);
+  // The trial is ended by its name too, never by being left out of the set.
+  const trial = trialSwitchedOff(form, saved);
+  return trial ? [...ended, trial.id] : ended;
 }
 
 /**
@@ -379,6 +505,10 @@ function endedPlanIds(form: Pick<PlansForm, "rows">, saved: readonly SavedPlan[]
  * a plan from the server keeps its id and is changed in place, a new one has
  * none, a row that was removed is absent and its plan is named in `ended`,
  * and every plan says `extraUsePriceCents`, null for one that stops.
+ *
+ * The free trial is one more entry while its switch is on, after the paid
+ * plans so that each row keeps its place in the set, with its id when the
+ * listing already offers it. Switching it off names its id in `ended`.
  *
  * Nothing is sent when the listing is not sold per use, when nothing about
  * the plans changed, and when the listing's plans were never read.
@@ -390,13 +520,18 @@ export function plansSaveOf(input: PlansSaveInput): PlansSave {
   if (!form.loaded || saved === null) return { kind: "none" };
 
   const check = checkPlans(form, limits);
-  if (!check.ok) {
-    // Rows exactly as the server gave them are not this save's to refuse.
-    const untouched = JSON.stringify(form.rows) === JSON.stringify(saved.map(rowOf));
-    return untouched ? { kind: "none" } : { kind: "invalid", errors: check.errors };
+  const trial = checkTrial(form, limits);
+  if (!check.ok || !trial.ok) {
+    const errors = check.ok ? noPlanErrors() : check.errors;
+    if (!trial.ok) errors.trial = trial.error;
+    // Rows and a trial exactly as the server gave them are not this save's to refuse.
+    const untouched =
+      JSON.stringify(form.rows) === JSON.stringify(paidOf(saved).map(rowOf)) &&
+      JSON.stringify(trialFormOf(form)) === JSON.stringify(trialOfSaved(saved) ?? NO_TRIAL);
+    return untouched ? { kind: "none" } : { kind: "invalid", errors };
   }
-  if (sameAsSaved(check.plans, saved)) return { kind: "none" };
-  return { kind: "send", plans: check.plans, ended: endedPlanIds(form, saved) };
+  if (sameAsSaved(check.plans, trial.plan, saved)) return { kind: "none" };
+  return { kind: "send", plans: trial.plan ? [...check.plans, trial.plan] : check.plans, ended: endedPlanIds(form, saved) };
 }
 
 const FIELD_ORDER: readonly PlanField[] = ["name", "price", "uses", "extraPrice", "row"];
@@ -411,6 +546,7 @@ function firstProblem(errors: PlanErrors): string | null {
     const field = FIELD_ORDER.find((candidate) => row[candidate] !== undefined);
     if (field) return `Plan ${index + 1}: ${row[field]}`;
   }
+  if (errors.trial !== undefined) return `${TRIAL_WORDS.name}: ${errors.trial}`;
   return null;
 }
 
@@ -436,6 +572,7 @@ const PLAN_FIELD_OF: Record<string, PlanField> = {
  * under the input of the row it is about: "plans[1].priceCents" is the price
  * of the second row, and "plans" is the set as a whole. A field that is not
  * about a plan is left out, so its sentence is shown as the refusal's message.
+ * The entry after the last row is the free trial: `trialProblemOf` reads it.
  */
 export function planFieldErrors(fields: Record<string, string>): PlanErrors {
   const errors = noPlanErrors();
@@ -452,6 +589,22 @@ export function planFieldErrors(fields: Record<string, string>): PlanErrors {
     row[field] ??= sentence;
   }
   return errors;
+}
+
+/**
+ * The sentence under the trial's box: what was found here before a save, or
+ * what the API said about the entry that is the trial, which is sent after
+ * the rows ("plans[n].includedUses" where n is the number of rows). null
+ * when there is none, and while the switch is off.
+ */
+export function trialProblemOf(form: Pick<PlansForm, "rows" | "trial">, errors: PlanErrors): string | null {
+  if (!trialFormOf(form).on) return null;
+  if (errors.trial !== undefined) return errors.trial;
+  const entry = errors.rows[form.rows.length];
+  if (!entry) return null;
+  // Its uses first: the one thing of a trial that is typed.
+  const field = (["uses", "row", "price", "extraPrice", "name"] as const).find((candidate) => entry[candidate] !== undefined);
+  return field ? (entry[field] ?? null) : null;
 }
 
 /**
@@ -546,9 +699,10 @@ function subscribersOf(plan: Pick<SavedPlan, "subscribers">): number {
   return wholePositive(plan.subscribers) ?? 0;
 }
 
+/** The paid plan a row was made from. A row is never the trial, so a trial's id finds nothing here. */
 function savedPlanOf(row: Pick<PlanRow, "id">, saved: readonly SavedPlan[] | null): SavedPlan | null {
   if (row.id === null) return null;
-  return (saved ?? []).find((plan) => plan.id === row.id) ?? null;
+  return paidOf(saved ?? []).find((plan) => plan.id === row.id) ?? null;
 }
 
 /**
@@ -586,13 +740,79 @@ export function endPlanDialog(
 }
 
 /**
- * The plans the listing has that are no longer among the rows, each as one
- * line: a plan is ended by the save, not by the button, and this says so.
+ * The paid plans the listing has that are no longer among the rows, each as
+ * one line: a plan is ended by the save, not by the button, and this says so.
+ * The trial's own line is `trialEndingLine`, said in its box.
  */
 export function endingPlanLines(form: PlansForm, saved: readonly SavedPlan[] | null): string[] {
   if (!form.loaded || saved === null) return [];
   const kept = new Set(form.rows.map((row) => row.id));
-  return saved.filter((plan) => !kept.has(plan.id)).map((plan) => `${plan.name.trim()} ends when you save.`);
+  return paidOf(saved)
+    .filter((plan) => !kept.has(plan.id))
+    .map((plan) => `${plan.name.trim()} ends when you save.`);
+}
+
+// ============================================
+// The free trial
+// ============================================
+
+function daysText(days: number): string {
+  return days === 1 ? "1 day" : `${count(days)} days`;
+}
+
+/**
+ * "A buyer can try it once, for 7 days. Nothing is charged, and you are not
+ * paid for these uses." Under the trial's box while its switch is on.
+ */
+export function trialNote(limits: PlanLimits = DEFAULT_PLAN_LIMITS): string {
+  return `A buyer can try it once, for ${daysText(limits.trialDays)}. Nothing is charged, and you are not paid for these uses.`;
+}
+
+/**
+ * What is asked before the switch goes off while people are on the trial:
+ * "3 people are on the free trial. They keep it until its 7 days end." null
+ * when nobody is on it and for a trial the listing does not offer yet: those
+ * go unasked.
+ */
+export function endTrialDialog(
+  form: Pick<PlansForm, "trial">,
+  saved: readonly SavedPlan[] | null,
+  limits: PlanLimits = DEFAULT_PLAN_LIMITS,
+): { title: string; description: string; confirmLabel: string } | null {
+  const before = savedTrialOf(saved);
+  if (!before || trialFormOf(form).id !== before.id) return null;
+  const kept = trialKeptLine(before, limits);
+  return kept === null ? null : { title: TRIAL_WORDS.endTitle, description: kept, confirmLabel: TRIAL_WORDS.end };
+}
+
+/**
+ * "3 people are on the free trial. They keep it until its 7 days end." What
+ * the people on a trial keep when it stops being offered; null when nobody
+ * is on it. The API lets a running trial go on to the end of its own days.
+ */
+function trialKeptLine(trial: Pick<SavedPlan, "subscribers">, limits: PlanLimits): string | null {
+  const people = subscribersOf(trial);
+  if (people === 0) return null;
+  const on = people === 1 ? "1 person is on the free trial." : `${count(people)} people are on the free trial.`;
+  return `${on} They keep it until its ${daysText(limits.trialDays)} end.`;
+}
+
+/**
+ * "The free trial stops being offered when you save." In the trial's box
+ * once the switch of a trial the listing offers went off: like a plan, it is
+ * ended by the save, not by the switch. Null otherwise.
+ */
+export function trialEndingLine(form: PlansForm, saved: readonly SavedPlan[] | null): string | null {
+  if (!form.loaded || saved === null) return null;
+  return trialSwitchedOff(form, saved) ? TRIAL_WORDS.ending : null;
+}
+
+/** "Free trial. 20 uses for 7 days. 3 people on it now." How many are on it is the creator's to see. */
+export function trialSaleLine(trial: Pick<SavedPlan, "includedUses" | "subscribers">, limits: PlanLimits = DEFAULT_PLAN_LIMITS): string {
+  const uses = trial.includedUses === 1 ? "1 use" : `${count(trial.includedUses)} uses`;
+  const people = subscribersOf(trial);
+  const now = people === 0 ? "Nobody on it now" : people === 1 ? "1 person on it now" : `${count(people)} people on it now`;
+  return `${TRIAL_WORDS.name}. ${uses} for ${daysText(limits.trialDays)}. ${now}.`;
 }
 
 // ============================================
@@ -610,33 +830,52 @@ export function planSaleLine(plan: SavedPlan): string {
   return `${plan.name.trim()}. ${formatCents(plan.priceCents)} for 30 days. ${uses}. ${subscribersText(subscribersOf(plan))}.`;
 }
 
-/** One line for each plan of a listing that is sold per use; none for any other listing. */
+/**
+ * One line for each plan of a listing that is sold per use, and one more for
+ * its free trial, under them; none for any other listing.
+ */
 export function planSaleLines(
   listing: { sells?: string | null; pricingModel: string; plans?: readonly SavedPlan[] | null } | null | undefined,
+  limits: PlanLimits = DEFAULT_PLAN_LIMITS,
 ): Array<{ id: string; line: string }> {
   if (!listing || listing.sells === "copies" || listing.pricingModel !== "per_request") return [];
-  return (savedPlansOf(listing) ?? []).map((plan) => ({ id: plan.id, line: planSaleLine(plan) }));
+  const saved = savedPlansOf(listing) ?? [];
+  const trial = savedTrialOf(saved);
+  return [
+    ...paidOf(saved).map((plan) => ({ id: plan.id, line: planSaleLine(plan) })),
+    ...(trial ? [{ id: trial.id, line: trialSaleLine(trial, limits) }] : []),
+  ];
 }
 
 /**
  * What moving a listing that is on sale away from "Pay per use" does to the
- * people on its plans, with their number; null when nobody is on one. The
- * API lets a plan run to the end of the 30 days that were paid for and does
- * not renew it once the listing is no longer sold per request
- * (services/useAccess.ts and the renewal in services/marketplaceSubscriptions.ts).
+ * people on its plans and on its free trial, with their number; null when
+ * nobody is on one. The API lets a plan run to the end of the 30 days that
+ * were paid for and does not renew it once the listing is no longer sold per
+ * request (services/useAccess.ts and the renewal in
+ * services/marketplaceSubscriptions.ts). A trial runs to the end of its own
+ * days the same way.
  */
 export function plansKeptLine(
   listing: { sells?: string | null; pricingModel: string; status?: string; plans?: readonly SavedPlan[] | null } | null | undefined,
   sell: Pick<SellForm, "sells" | "choice">,
+  limits: PlanLimits = DEFAULT_PLAN_LIMITS,
 ): string | null {
   if (!listing || listing.status !== "published" || listing.sells === "copies" || listing.pricingModel !== "per_request") {
     return null;
   }
   // Selling copies instead has its own dialog, which counts these people among its subscribers.
   if (sell.sells !== "use" || sell.choice === "per_use") return null;
-  const subscribers = (savedPlansOf(listing) ?? []).reduce((sum, plan) => sum + subscribersOf(plan), 0);
-  if (subscribers === 0) return null;
-  return subscribers === 1
-    ? "1 subscriber keeps their plan until the 30 days they paid for end and is not charged again."
-    : `${count(subscribers)} subscribers keep their plan until the 30 days they paid for end and are not charged again.`;
+  const saved = savedPlansOf(listing) ?? [];
+  // The paid plans first: what was paid for. A free trial was not, so the people on it are said apart.
+  const subscribers = paidOf(saved).reduce((sum, plan) => sum + subscribersOf(plan), 0);
+  const paid =
+    subscribers === 0
+      ? null
+      : subscribers === 1
+        ? "1 subscriber keeps their plan until the 30 days they paid for end and is not charged again."
+        : `${count(subscribers)} subscribers keep their plan until the 30 days they paid for end and are not charged again.`;
+  const trial = savedTrialOf(saved);
+  const tried = trial ? trialKeptLine(trial, limits) : null;
+  return paid && tried ? `${paid} ${tried}` : (paid ?? tried);
 }

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, Bot, Code2, KeyRound } from "lucide-react";
+import { ArrowLeft, Bot, Code2, KeyRound, Workflow } from "lucide-react";
 
 import { CodeBlock } from "@/components/marketing/code-block";
 import { buttonVariants } from "@/components/ui/button";
@@ -10,26 +10,30 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useSession } from "@/hooks/use-session";
-import { API_BASE_URL, ApiError, publicAgentApi, type AgentApiPage } from "@/lib/api";
+import { API_BASE_URL, ApiError, paidWorkflowApi, publicAgentApi, type AgentApiPage, type WorkflowApiPage } from "@/lib/api";
 import {
   API_PAGE_HEADINGS,
   API_PAGE_WORDS,
+  WORKFLOW_API_PAGE_WORDS,
   apiPageView,
   createKeyHref,
-  isAgentApiPage,
+  isApiPageFor,
   type ApiPageHeader,
+  type ApiPageReader,
 } from "@/lib/api-page";
 import { cn } from "@/lib/utils";
 
 export interface ApiPageViewProps {
-  /** The name in the page's address, `/a/<handle>/api`. */
+  /** The name in the page's address: an agent's handle in `/a/<handle>/api`, a listing's slug in `/w/<slug>/api`. */
   handle: string;
   /**
    * What the server read for this page: the page's data, "not_found" when
    * this address has no API page, or null when the read failed and the
    * browser should try for itself.
    */
-  initial: AgentApiPage | "not_found" | null;
+  initial: AgentApiPage | WorkflowApiPage | "not_found" | null;
+  /** Which API page this is, and so which read the browser makes: an agent's unless it says. */
+  reader?: ApiPageReader;
 }
 
 /** Placeholder shaped like the page: the header band, then its parts. */
@@ -89,11 +93,14 @@ function HeaderList({ headers }: { headers: ApiPageHeader[] }) {
  * The API page of a listing: where to send a request, three snippets, the
  * price and the plans, the limits, the usage headers and the refusals.
  * Anyone with the link can open it, signed in or not. Every word and number
- * on it comes from `apiPageView` (lib/api-page.ts).
+ * on it comes from `apiPageView` (lib/api-page.ts), an agent's page and a
+ * workflow's alike; only the read and the not-found words are the reader's.
  */
-export function ApiPageView({ handle, initial }: ApiPageViewProps) {
+export function ApiPageView({ handle, initial, reader = "agent" }: ApiPageViewProps) {
   const { authed } = useSession();
-  const [page, setPage] = useState<AgentApiPage | null>(initial !== null && initial !== "not_found" ? initial : null);
+  const [page, setPage] = useState<AgentApiPage | WorkflowApiPage | null>(
+    initial !== null && initial !== "not_found" ? initial : null,
+  );
   const [notFound, setNotFound] = useState(initial === "not_found");
   const [loadError, setLoadError] = useState<unknown>(null);
   const [loading, setLoading] = useState(initial === null);
@@ -104,11 +111,13 @@ export function ApiPageView({ handle, initial }: ApiPageViewProps) {
     // The server already answered; the browser reads only after a failed read or a retry.
     if (initial !== null && attempt === 0) return;
     let cancelled = false;
-    publicAgentApi
-      .getApiPage(handle)
+    // An agent's page by its handle, or a workflow's by its listing's slug: the one public read of each.
+    const read: Promise<unknown> =
+      reader === "workflow" ? paidWorkflowApi.getApiPage(handle) : publicAgentApi.getApiPage(handle);
+    read
       .then((res) => {
         if (cancelled) return;
-        if (!isAgentApiPage(res)) throw new Error(API_PAGE_WORDS.loadFailed);
+        if (!isApiPageFor(reader, res)) throw new Error(API_PAGE_WORDS.loadFailed);
         setPage(res);
         setNotFound(false);
         setLoadError(null);
@@ -116,7 +125,8 @@ export function ApiPageView({ handle, initial }: ApiPageViewProps) {
       .catch((error: unknown) => {
         if (cancelled) return;
         // The API answers 404 for an unknown handle and for an agent whose use
-        // is not sold (never revealing which); anything else can be retried.
+        // is not sold (never revealing which), and for a slug with no workflow
+        // on sale, with no sentence; anything else can be retried.
         if (error instanceof ApiError && error.status === 404) setNotFound(true);
         else setLoadError(error);
       })
@@ -126,7 +136,7 @@ export function ApiPageView({ handle, initial }: ApiPageViewProps) {
     return () => {
       cancelled = true;
     };
-  }, [handle, initial, attempt]);
+  }, [handle, initial, attempt, reader]);
 
   function retryLoad() {
     setLoadError(null);
@@ -156,17 +166,27 @@ export function ApiPageView({ handle, initial }: ApiPageViewProps) {
   const view = page && !notFound ? apiPageView(page, API_BASE_URL) : null;
 
   if (!view) {
-    // What the agent's public page shows for a page that does not exist.
+    // What the agent's public page, or the workflow's, shows for a page that does not exist.
     return (
       <div className="min-h-screen bg-background">
         <div className="container mx-auto max-w-3xl px-4 py-24">
-          <EmptyState
-            icon={Bot}
-            title={API_PAGE_WORDS.notFoundTitle}
-            description={API_PAGE_WORDS.notFound}
-            actionLabel="Browse the marketplace"
-            actionHref="/marketplace"
-          />
+          {reader === "workflow" ? (
+            <EmptyState
+              icon={Workflow}
+              title={WORKFLOW_API_PAGE_WORDS.notFoundTitle}
+              description={WORKFLOW_API_PAGE_WORDS.notFound}
+              actionLabel="Browse the marketplace"
+              actionHref="/marketplace"
+            />
+          ) : (
+            <EmptyState
+              icon={Bot}
+              title={API_PAGE_WORDS.notFoundTitle}
+              description={API_PAGE_WORDS.notFound}
+              actionLabel="Browse the marketplace"
+              actionHref="/marketplace"
+            />
+          )}
         </div>
       </div>
     );
@@ -183,7 +203,7 @@ export function ApiPageView({ handle, initial }: ApiPageViewProps) {
             className="inline-flex items-center gap-2 rounded text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <ArrowLeft className="h-4 w-4" aria-hidden="true" />
-            {API_PAGE_WORDS.agentPage}
+            {view.pageLabel}
           </Link>
           <div className="mt-4 flex items-start gap-4">
             <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl bg-primary/10">
@@ -217,7 +237,7 @@ export function ApiPageView({ handle, initial }: ApiPageViewProps) {
           <p>{view.keyNote}</p>
           {view.otherEndpoints.length > 0 && (
             <div className="space-y-2">
-              <h3 className="text-sm font-medium text-foreground">{API_PAGE_WORDS.otherAddresses}</h3>
+              <h3 className="text-sm font-medium text-foreground">{view.otherAddresses}</h3>
               <dl className="space-y-2">
                 {view.otherEndpoints.map((endpoint) => (
                   <div key={endpoint.id} className="min-w-0">
@@ -250,12 +270,12 @@ export function ApiPageView({ handle, initial }: ApiPageViewProps) {
             {/* The listing's free trial, in one line. It is started on the agent's page, linked just below. */}
             {view.trialLine && <p>{view.trialLine}</p>}
             <p>
-              {API_PAGE_WORDS.startPlan}{" "}
+              {view.startPlan}{" "}
               <Link
                 href={view.agentHref}
                 className="rounded text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
-                {API_PAGE_WORDS.agentPage}
+                {view.pageLabel}
               </Link>
             </p>
           </Part>
@@ -271,7 +291,7 @@ export function ApiPageView({ handle, initial }: ApiPageViewProps) {
                   href={view.agentHref}
                   className="rounded text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
-                  {API_PAGE_WORDS.agentPage}
+                  {view.pageLabel}
                 </Link>
               </p>
             )}
@@ -328,7 +348,7 @@ export function ApiPageView({ handle, initial }: ApiPageViewProps) {
               href={view.agentHref}
               className="rounded text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
-              {API_PAGE_WORDS.agentPage}
+              {view.pageLabel}
             </Link>
           </p>
           {/* Someone signed out goes through sign-in and lands on the keys page after it. */}

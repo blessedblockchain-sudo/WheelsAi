@@ -127,6 +127,10 @@ export const RESERVED_HANDLES: readonly string[] = Object.freeze([
   "wheelsai",
   "null",
   "undefined",
+  // Added after the migration that gave public agents a handle, which carries
+  // the names above in this order: a new name goes at the end.
+  // A workflow on sale: its page /w/<slug>.
+  "w",
 ]);
 
 const RESERVED = new Set(RESERVED_HANDLES);

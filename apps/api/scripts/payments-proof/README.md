@@ -17,6 +17,7 @@ These scripts run every money path of WheelsAI against a Solana chain that lives
 | `browser-pay-in.cjs`, `browser-pay-out.cjs`, `browser-deposits.cjs`, `browser-billing.cjs` | the same in a browser, with a test wallet and no extension |
 | `walk-runbook.cjs` | the mainnet run of `docs/PAYMENTS-RUN.md`, rehearsed step for step from an empty database, with test wallets: the same order, amounts and settings, on the local chain with a stated price of SOL |
 | `make-run-database.cjs` | makes the empty database a devnet or mainnet run keeps its records in; it never drops one |
+| `walk-devnet-x402.cjs` | on devnet, with the founder's own wallet: one use of an agent paid from a wallet at its x402 door, by a caller with no account, then everything handed back to that wallet |
 | `browser-run-start.cjs` | what a new person meets at the start of a run on a real network, before any wallet: signing up on an empty database and the Billing page, in a browser. It signs up an account, so it is run on a database other than the run's |
 | `run-all.sh` | the chain, the API and the five walks, in order; with `--runbook`, the rehearsal instead |
 | `lib.cjs` | what the scripts share: where the repository and the keys are, the database, the browser |
@@ -115,6 +116,30 @@ After `--runbook` or `--run <network>`, `-- <command>` runs an operator's comman
 ```
 bash apps/api/scripts/payments-proof/start-api.sh --run mainnet-beta -- npx tsx scripts/treasury-verify.ts
 ```
+
+## The x402 door on devnet, with your own wallet
+
+`walk-devnet-x402.cjs` pays for one use of an agent from a Solana wallet on devnet, the way a caller with no account and an x402 client pays: a 402 with PAYMENT-REQUIRED, the payment signed by the payer only, the answer released once devnet confirms it. The payer is a wallet of yours; everything else is made by the walk.
+
+What it needs:
+
+- A keypair file of a devnet wallet (a JSON list of 64 numbers, as `solana-keygen new` writes it). It is read once, never written or copied, and only its address is printed.
+- In that wallet, on devnet: about 0.03 SOL (https://faucet.solana.com, or `solana airdrop 1 <address> --url devnet`) and at least 0.20 USDC of the devnet mint `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` (https://faucet.circle.com, Solana, Devnet). When either is short the walk says what to get and stops before it makes anything.
+- Docker with the repository's Postgres and Redis, `openssl`, and ports 4010 and 4330 to 4332 free. Database 1 of Redis must be empty.
+
+```
+node apps/api/scripts/payments-proof/walk-devnet-x402.cjs <a folder> --payer <keypair.json>
+```
+
+`X402_PAYER_KEYPAIR=<keypair.json>` names the file in place of `--payer`. It refuses to run on anything but devnet. It makes its own empty database (`wheelsai_walk_x402_<time>`, left for reading afterwards), a master key and a treasury wallet in memory, a stand-in for Nosana on loopback so the agent answers with no GPU, and its own API on port 4010 with the door open (`start-api.sh --run devnet` with `X402_ENABLED=true`). Your wallet opens the treasury's USDC account and lends the door's fee payer 0.02 SOL. Then one paid use, and the same payment presented again, each checked against the chain and the database, `PASS` or `FAIL` and `N of N checks passed` at the end, with the transaction's link on the explorer.
+
+At the end it stops its API, sends the fee payer's SOL and the treasury's USDC back to your wallet and closes the treasury's token account, so its rent comes back too. What your wallet spends is the network's fees of those few transactions, under 0.0001 SOL. Exit 0 when every check passed, 1 when one failed, 2 when the walk stopped, 3 when the wallet is not funded.
+
+It takes about a minute once the containers are up: on the local test chain it ran in 55 seconds, the paid answer 1.2 seconds after the request. Keep the machine awake and the terminal open until it prints `N of N checks passed`. Ctrl+C still hands everything back. A restart of the machine, a closed lid that restarts it, or `kill -9` does not: the walk's treasury and fee payer exist only in that run, so up to about 0.022 devnet SOL (the 0.02 lent and the token account's rent) and 0.05 devnet USDC would stay where nobody can reach them.
+
+The same walk runs on the local test chain with no wallet of yours, to see it work before devnet: start the chain with `local-chain.sh start`, then `node apps/api/scripts/payments-proof/walk-devnet-x402.cjs <a folder> --local-chain`. The payer is then made in memory and funded from the chain's own faucet and USDC mint, and the walk refuses any RPC that is not on this machine.
+
+`start-api.sh --run devnet` opens the door only with `X402_ENABLED=true` and a `TREASURY_WALLET_ADDRESS`; it then also sends what it takes and runs the settlement worker. On `--run mainnet-beta` and `--runbook` the door stays off whatever is set.
 
 ## Run the browser tests
 

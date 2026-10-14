@@ -59,6 +59,21 @@
 # USDC and $10 in SOL, a paying wallet that works down to 0.01 SOL, the
 # product's own payout limits, and credits that can only be paid for.
 #
+# THE x402 DOOR (paying one use of an agent from a wallet, with no account).
+# Off in every way unless asked for, and asked for on `--run devnet` ONLY:
+#
+#   X402_ENABLED=true TREASURY_WALLET_ADDRESS=<a wallet> ... start-api.sh --run devnet
+#
+# With it, the run also sends the payments it takes and runs the settlement
+# worker (X402_SUBMIT_TRANSACTIONS=true, X402_SETTLEMENT_WORKER_ENABLED=true,
+# X402_SETTLEMENT_INTERVAL_MS 5000 unless set), because the door opens only
+# with all three; the deployment's own wallet payment stays off
+# (X402_INFERENCE_MODE=off). It needs a real TREASURY_WALLET_ADDRESS, the
+# wallet the payments go to: without one it starts nothing.
+# walk-devnet-x402.cjs starts the API this way. On `--run mainnet-beta` and
+# on `--runbook` X402_ENABLED is false whatever the caller sets: the door
+# opens on mainnet only on the founder's word, in a commit of its own.
+#
 # A SECOND API BESIDE ANOTHER ONE. API_PORT names its port (4000 unless set)
 # and WEB_PORT the web app it answers (3100 unless set). It must keep its
 # queued work apart: RUN_REDIS_DB=<1 to 15> gives it that numbered database
@@ -88,6 +103,8 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../../../.." && pwd)"
+# Read before run_settings sets it to false, so `--run devnet` can honour it.
+X402_ASKED="${X402_ENABLED:-false}"
 MODE="${1:-}"
 USAGE="usage: $0 [--runbook | --run devnet | --run mainnet-beta] [-- command ...]"
 case "$MODE" in
@@ -133,8 +150,33 @@ run_settings() {
   export HOT_WALLET_MIN_SOL="${HOT_WALLET_MIN_SOL:-0.01}"
   export PAYOUT_MAX_PER_PAYOUT_USD="${PAYOUT_MAX_PER_PAYOUT_USD:-500}" PAYOUT_MAX_PER_DAY_USD="${PAYOUT_MAX_PER_DAY_USD:-1000}"
   export DEPOSIT_ACCOUNT_OPENS_PER_DAY="${DEPOSIT_ACCOUNT_OPENS_PER_DAY:-25}"
-  # Credits come from a payment and from nothing else.
+  # Credits come from a payment and from nothing else. The x402 door is off
+  # here for the rehearsal and for mainnet-beta alike; only `--run devnet`
+  # turns it on again, below, when the caller asked for it.
   export ALLOW_MOCK_CHECKOUT=false X402_ENABLED=false
+}
+
+# The x402 door on a devnet run, when the caller set X402_ENABLED=true.
+x402_door_on_devnet() {
+  case "$X402_ASKED" in
+    true) ;;
+    false) return 0 ;;
+    *) echo "X402_ENABLED is true or false; it was: $X402_ASKED" >&2; exit 2 ;;
+  esac
+  # The API itself refuses the all-ones default (nobody holds its key) and a
+  # value that is not an address; said here first, before anything starts.
+  if [ -z "${TREASURY_WALLET_ADDRESS:-}" ] || [ "$TREASURY_WALLET_ADDRESS" = "11111111111111111111111111111111" ] \
+    || ! [[ "$TREASURY_WALLET_ADDRESS" =~ ^[1-9A-HJ-NP-Za-km-z]{32,44}$ ]]; then
+    echo "X402_ENABLED=true needs TREASURY_WALLET_ADDRESS: the address of a wallet the door's payments go to, whose key you hold" >&2
+    exit 1
+  fi
+  # The door opens only when it sends what it takes and the worker finishes
+  # what the request could not (services/x402DoorRules.ts, x402DoorOpen).
+  export X402_ENABLED=true X402_SUBMIT_TRANSACTIONS=true X402_SETTLEMENT_WORKER_ENABLED=true
+  export X402_SETTLEMENT_INTERVAL_MS="${X402_SETTLEMENT_INTERVAL_MS:-5000}"
+  # The deployment's own wallet payment is not part of this run.
+  export X402_INFERENCE_MODE=off
+  [ "${#COMMAND[@]}" -gt 0 ] || echo "The x402 door is open on this devnet run: payments go to $TREASURY_WALLET_ADDRESS." >&2
 }
 
 if [ "$MODE" = "--run" ]; then
@@ -170,6 +212,11 @@ if [ "$MODE" = "--run" ]; then
   export DEPOSIT_SCAN_INTERVAL_MS="${DEPOSIT_SCAN_INTERVAL_MS:-30000}" SWEEP_INTERVAL_MS="${SWEEP_INTERVAL_MS:-30000}"
   export WALLET_TOPUPS_ENABLED=true DEPOSITS_ENABLED=true PAYOUTS_ENABLED=true SWEEPS_ENABLED="${SWEEPS_ENABLED:-true}"
   run_settings
+  if [ "$NETWORK" = "devnet" ]; then
+    x402_door_on_devnet
+  elif [ "$X402_ASKED" != "false" ]; then
+    echo "X402_ENABLED is kept false on mainnet-beta: the x402 door is not opened on mainnet by this script." >&2
+  fi
   [ "${#COMMAND[@]}" -gt 0 ] || echo "Starting the API for the payments run on $NETWORK (127.0.0.1:$PORT). Every money rail is on." >&2
 else
   KEYS="${WHEELSAI_LOCAL_CHAIN_DIR:-$HOME/.wheelsai/local-chain}/keys"

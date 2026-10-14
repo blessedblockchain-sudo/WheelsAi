@@ -273,6 +273,62 @@ deployed on it (`GET /api/platform/compute` with the report's key says `"mode":"
 should also deploy a model is started with `WITH_NOSANA=1`, which keeps the Nosana account of
 `apps/api/.env` and both workers. That run can spend Nosana credits.
 
+## Devnet: one use paid from a wallet at the x402 door
+
+A creator can let people with no account pay each use of an agent from a Solana wallet, in USDC, with
+an x402 client. `apps/api/scripts/payments-proof/walk-devnet-x402.cjs` proves it on devnet with the
+founder's own wallet as the payer. It costs only devnet network fees; every lamport and every unit of
+USDC the walk moves is sent back to that wallet at the end.
+
+What the founder needs:
+
+- A keypair file of a devnet wallet (`solana-keygen new -o <file>`, kept outside the repository). The
+  walk reads it once and never writes, copies or prints it: only its address is shown.
+- In that wallet: about 0.03 devnet SOL, from https://faucet.solana.com (choose devnet) or
+  `solana airdrop 1 <address> --url devnet`, and at least 0.20 devnet USDC (mint
+  `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`), from https://faucet.circle.com (Solana, Devnet).
+  When either is short, the walk says which and how much, and stops before it makes anything.
+- The repository's Postgres and Redis running, `openssl`, ports 4010 and 4330 to 4332 free, and an empty
+  database 1 in Redis.
+
+```bash
+node apps/api/scripts/payments-proof/walk-devnet-x402.cjs ~/x402-devnet-run --payer <keypair file>
+```
+
+To see it work first with no wallet, the same walk runs on the local test chain:
+`bash apps/api/scripts/payments-proof/local-chain.sh start`, then the command above with `--local-chain`
+in place of `--payer <keypair file>`. It passed 30 of 30 checks there in 55 seconds.
+
+What it does: it checks the RPC is devnet; reads the wallet's SOL and USDC; makes a master key and a
+treasury wallet in memory, its own empty database, a stand-in for Nosana on loopback (the agent answers
+with no GPU and no Nosana account) and its own API on port 4010, started with
+`X402_ENABLED=true start-api.sh --run devnet`. The wallet opens the treasury's USDC account. A seller
+puts an agent on sale at $0.05 a use and switches paying from a wallet on. A call with no key is
+answered 402, and its PAYMENT-REQUIRED header is printed decoded. The wallet lends the fee payer that
+header names 0.02 SOL. Then one use is paid as an x402 client pays it, and the walk shows: the
+transaction with its link on the devnet explorer, the time from the request to the answer, the wallet's
+USDC down by exactly 50,000 units (5 cents) and none of its SOL taken by the use, the treasury up by the
+same, the fee the fee payer paid, one payment row, one sale with no buyer and the paying wallet, one line
+in the creator's earnings, the same PAYMENT-SIGNATURE refused the second time, and the payment settled
+by the worker. Each check prints PASS or FAIL, and the walk ends with `N of N checks passed`.
+
+At the end it stops its API, sends the fee payer's SOL and the treasury's USDC back to the wallet and
+closes the treasury's token account, so its rent comes back too, and checks that the wallet holds the
+USDC it started with and its SOL less only the network's fees. The database is left for reading; its
+name and the API's log are printed.
+
+It takes a few minutes, most of them starting the API, making its database, the deployment on the
+stand-in and the wait for the payment to be settled (the first run gives the real figure). Keep the
+machine awake and the terminal open until it prints `N of N checks passed`. Ctrl+C still hands
+everything back. A restart of the machine, a closed lid that restarts it, or `kill -9` does not: the
+walk's treasury and fee payer exist only in that run, so up to about 0.022 devnet SOL (the 0.02 lent
+and the token account's rent) and 0.05 devnet USDC would stay where nobody can reach them.
+
+`start-api.sh --run devnet` opens the door only when `X402_ENABLED=true` is set with a
+`TREASURY_WALLET_ADDRESS`; it then also sets `X402_SUBMIT_TRANSACTIONS=true`, the settlement worker
+(every 5 seconds unless `X402_SETTLEMENT_INTERVAL_MS` says otherwise) and keeps the deployment's own
+wallet payment off. On `--run mainnet-beta` and `--runbook`, `X402_ENABLED` stays false whatever is set.
+
 ## Mainnet: what it needs
 
 **It needs the founder's go-ahead.** It moves real money, all of it between the founder's own wallets:
@@ -338,7 +394,7 @@ PAYOUT_EXECUTOR_INTERVAL_MS=15000
 TOPUP_RECONCILE_INTERVAL_MS=15000
 SOL_PRICE_SOURCE=pyth
 ALLOW_MOCK_CHECKOUT=false
-X402_ENABLED=false
+X402_ENABLED=false          # on mainnet-beta whatever is set
 # For this run only, so that a few dollars move through every path:
 SWEEP_MIN_USD=1
 HOT_WALLET_FLOAT_USDC=5

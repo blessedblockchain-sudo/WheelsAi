@@ -11,14 +11,19 @@
  * The count is said by `planCountLine` of lib/use-plans.ts, the function the
  * agent's own page uses, so the two pages never count differently.
  *
+ * A row on the listing's free trial is worded here too, as a trial: its badge
+ * is "Free trial", its line is the trial's count, and it can only be
+ * stopped. It never renews, so nothing about a renewal or a move is offered.
+ *
  * Never said here: how many people are on a plan, anything of the
  * organization that sells it, or a count that has no end.
  */
 import type { PaidUsePlan, PlanOffer, PlanTerms } from "./api";
 import { formatCents } from "./agent-page";
 import type { InstalledConfirm, InstalledFormat, InstalledLicence, InstalledLine, InstalledViewer } from "./installed-rows";
-import { shortDay } from "./paid-use";
+import { shortDay, type PaidPrice } from "./paid-use";
 import {
+  TRIAL_WORDS,
   carriedOnMove,
   planAfterLine,
   planCountLine,
@@ -28,6 +33,7 @@ import {
   planTermsOf,
   planUsesLine,
   plansOf,
+  trialCountLine,
 } from "./use-plans";
 
 // ---------------------------------------------------------------------------
@@ -42,6 +48,8 @@ export const INSTALLED_PLAN_WORDS = {
   noneBigger: "There is no bigger plan to move to now.",
   /** A move that got no sentence from the API (the request never got an answer). */
   moveFailed: "The move did not go through. Look at this row before you try again.",
+  /** What "Stop using" asks of a row on the free trial: a trial is started once, so stopping gives it up. */
+  stopTrial: "This ends your free trial and your access now. You cannot start the free trial again.",
 } as const;
 
 /** "You are now on the Pro plan." */
@@ -81,9 +89,29 @@ export function planOfInstall(install: InstalledLicence): PaidUsePlan | null {
   return planCountOf(plan) ? plan : null;
 }
 
+/** Whether the row is on the listing's free trial: a plan the API marks as one. */
+export function onTrial(install: InstalledLicence): boolean {
+  return planOfInstall(install)?.trial === true;
+}
+
 /** The listing sells use of this agent today. */
 function sellsUseNow(install: InstalledLicence): boolean {
   return install.listing.status === "published" && install.listing.sells === "use";
+}
+
+/**
+ * What a use past the trial's uses costs this buyer: the listing's price per
+ * use, when they agreed to a price per use themselves and the listing does
+ * not ask more than that. Null otherwise: the trial then stops and they
+ * choose. The rule the API charges by.
+ */
+function perUseAfterTrial(install: InstalledLicence): PaidPrice | null {
+  const { listing } = install;
+  const agreed = install.acceptedPricing;
+  if (!sellsUseNow(install) || listing.pricingModel !== "per_request" || !listing.pricePerRequestCents) return null;
+  if (agreed?.pricingModel !== "per_request" || agreed.pricePerRequestCents == null) return null;
+  if (listing.pricePerRequestCents > agreed.pricePerRequestCents) return null;
+  return { model: "per_request", cents: listing.pricePerRequestCents, unit: listing.unit === "run" ? "run" : "message" };
 }
 
 /** The plans the listing offers now, as the API sent them with the install. */
@@ -98,11 +126,13 @@ function plansOnOffer(install: InstalledLicence): PlanOffer[] {
 /**
  * "Starter, $9.00 for 30 days". The price is the one this buyer agreed to
  * (the subscription's own), which is what a renewal charges; the plan's
- * price today can differ. Null when the row is not on a plan.
+ * price today can differ. A free trial has no price: its badge is
+ * "Free trial". Null when the row is not on a plan.
  */
 export function planBadge(install: InstalledLicence): string | null {
   const plan = planOfInstall(install);
   if (!plan) return null;
+  if (plan.trial === true) return TRIAL_WORDS.name;
   const name = plan.name.trim();
   const agreed = install.subscription?.priceCents ?? null;
   if (agreed === null) return name || "Plan";
@@ -125,7 +155,8 @@ export function renewalNotThroughLine(priceCents: number | null, before: string)
  * agent's page. While a renewal is being retried the row says that first,
  * then the count with no day in it (the period's end is behind the buyer).
  * Someone who may not spend is not told to move up: the row does not offer
- * it to them. Null when the row is not on a plan.
+ * it to them. A free trial's line is its own count, as the agent's page
+ * says it. Null when the row is not on a plan.
  */
 export function planLine(
   install: InstalledLicence,
@@ -136,6 +167,17 @@ export function planLine(
   const sub = install.subscription;
   const read = planCountOf(plan);
   if (!plan || !sub || !read) return null;
+  if (plan.trial === true) {
+    const text = trialCountLine({
+      plan: read,
+      endsAt: sub.currentPeriodEnd,
+      // An agent that is no longer sold for use has nothing to choose: the line then only counts.
+      ...(sellsUseNow(install) && { perUse: perUseAfterTrial(install) }),
+      dates: datesOf(fmt),
+    });
+    // The words never change before the uses are gone; from 85% used the line takes the tone of a plan's warning.
+    return { text, tone: read.remainingUses > 0 && read.warning === null ? "ok" : "warn" };
+  }
   // An agent that is no longer sold for use sells no extra use either, whatever the plan agreed:
   // past its count the plan stops, and the line must not name a charge.
   const count = sellsUseNow(install) ? read : { ...read, extraUsePriceCents: null };
@@ -166,13 +208,13 @@ export function planLine(
  *   resume   the buyer cancelled the renewal, and the plan is still on
  *            offer, so turning it back on means something
  *   null     nothing to offer: not on a plan, or the plan will not renew
- *            whatever the buyer chooses (its creator ended it, or the agent
- *            is no longer sold this way)
+ *            whatever the buyer chooses (its creator ended it, the agent is
+ *            no longer sold this way, or it is a free trial)
  */
 export function planRenewal(install: InstalledLicence): "cancel" | "resume" | null {
   const plan = planOfInstall(install);
   const sub = install.subscription;
-  if (!plan || !sub) return null;
+  if (!plan || !sub || plan.trial === true) return null;
   if (sub.cancelAtPeriodEnd) {
     return plansOnOffer(install).some((offer) => offer.id === plan.id) ? "resume" : null;
   }
@@ -186,13 +228,14 @@ export function planRenewal(install: InstalledLicence): "cancel" | "resume" | nu
 /**
  * The plans this buyer can move up to: the ones the listing offers now that
  * cost more for their 30 days than the price the buyer agreed to, the rule
- * the API holds a move to. Empty when there is none, and for a row that is
- * not on a plan.
+ * the API holds a move to. Empty when there is none, for a row that is not
+ * on a plan, and for a free trial: nobody moves up from one (a plan is
+ * started over it on the agent's page).
  */
 export function biggerPlans(install: InstalledLicence): PlanOffer[] {
   const plan = planOfInstall(install);
   const agreed = install.subscription?.priceCents ?? null;
-  if (!plan || agreed === null) return [];
+  if (!plan || agreed === null || plan.trial === true) return [];
   return plansOnOffer(install).filter((offer) => offer.id !== plan.id && offer.priceCents > agreed);
 }
 
@@ -228,9 +271,9 @@ export interface MoveUpChoice {
   cards: MoveUpCard[];
 }
 
-/** The dialog that lists the bigger plans. Null when the row is not on a plan. */
+/** The dialog that lists the bigger plans. Null when the row is not on a plan, and for a free trial. */
 export function moveUpChoice(install: InstalledLicence): MoveUpChoice | null {
-  if (!planOfInstall(install)) return null;
+  if (!planOfInstall(install) || onTrial(install)) return null;
   return {
     title: `Move up on ${install.listing.title}`,
     intro: INSTALLED_PLAN_WORDS.chooseIntro,
@@ -257,11 +300,11 @@ export interface MoveUpConfirm extends InstalledConfirm {
  * your credits. The 188 uses you have left are added to it." With nothing
  * left, the second sentence is left out. Its `terms` are the chosen plan's,
  * taken here, once, so what is sent is what this dialog named. Null when the
- * row is not on a plan.
+ * row is not on a plan, and for a free trial.
  */
 export function moveUpConfirm(install: InstalledLicence, offer: PlanOffer): MoveUpConfirm | null {
   const plan = planOfInstall(install);
-  if (!plan) return null;
+  if (!plan || plan.trial === true) return null;
   // The agent's page asks the same thing in the same words: one dialog for both. When a move carries
   // fewer uses than are left (some were carried in before), it says both numbers.
   const left = Number.isFinite(plan.remainingUses) ? Math.max(0, Math.floor(plan.remainingUses)) : 0;
@@ -293,11 +336,14 @@ export function moveUpRefusal(status: number, sentence: string | null | undefine
 
 /**
  * What "Stop using" asks before it ends a plan: it ends now, and the 30 days
- * paid for are not refunded. Null when the row is not on a plan.
+ * paid for are not refunded. A free trial was not paid for: stopping it
+ * gives up the trial, which cannot be started a second time. Null when the
+ * row is not on a plan.
  */
 export function planStopSentence(install: InstalledLicence, fmt: InstalledFormat = {}): string | null {
   const sub = install.subscription;
   if (!planOfInstall(install) || !sub) return null;
+  if (onTrial(install)) return INSTALLED_PLAN_WORDS.stopTrial;
   // A renewal that did not go through: the 30 days paid for are already over, so there is no day to
   // keep access until and nothing to refund.
   if (sub.status === "past_due") return "This ends your plan and your access now. You are not charged again.";

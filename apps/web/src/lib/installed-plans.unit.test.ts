@@ -15,6 +15,7 @@ import {
   moveUpConfirm,
   moveUpRefusal,
   movedLine,
+  onTrial,
   planBadge,
   planLine,
   planOfInstall,
@@ -23,7 +24,7 @@ import {
   renewalNotThroughLine,
 } from "./installed-plans";
 import type { InstalledLicence } from "./installed-rows";
-import { planCountLine } from "./use-plans";
+import { planCountLine, planCountOf, trialCountLine } from "./use-plans";
 
 const FMT = { timeZone: "UTC", locale: "en-US" };
 
@@ -402,4 +403,114 @@ test("the line points at moving up only for someone who may spend", () => {
   assert.equal(planLine(usedUp, FMT, { canSpend: false })?.text, "You have used all 500 uses. It starts again on 12 Nov.");
   // With uses left the line never spoke of moving, so it is the same for everyone.
   assert.deepEqual(planLine(onPlan(), FMT, { canSpend: false }), planLine(onPlan(), FMT));
+});
+
+// ---------------------------------------------------------------------------
+// A row on the listing's free trial
+// ---------------------------------------------------------------------------
+
+const OCT_20 = "2026-10-20T12:00:00.000Z";
+
+/** A trial's row as the API sends it: named "Free trial", no price, no extra price, never a day the count starts again. */
+function trialPlan(over: Partial<PaidUsePlan> = {}): PaidUsePlan {
+  return {
+    id: "p-trial",
+    name: "Free trial",
+    trial: true,
+    includedUses: 20,
+    carriedUses: 0,
+    usedUses: 8,
+    remainingUses: 12,
+    extraUsePriceCents: null,
+    warning: null,
+    ...over,
+  };
+}
+
+function onFreeTrial(over: Partial<InstalledLicence> = {}, planOver: Partial<PaidUsePlan> = {}): InstalledLicence {
+  return onPlan({
+    totalRequests: 8,
+    totalSpentCents: 0,
+    subscription: sub({ priceCents: 0, cancelAtPeriodEnd: true, currentPeriodEnd: OCT_20, plan: trialPlan(planOver) }),
+    ...over,
+  });
+}
+
+const AGREED = { pricingModel: "per_request" as const, pricePerRequestCents: 5, acceptedAt: "2026-10-13T12:00:00.000Z" };
+const TRIAL_GONE = { usedUses: 20, remainingUses: 0, warning: 100 as const };
+
+test("a row on the free trial is told as one, and a paid plan is not", () => {
+  assert.equal(onTrial(onFreeTrial()), true);
+  assert.equal(onTrial(onPlan()), false);
+  assert.equal(onTrial(onPlan({ subscription: sub({ plan: plan({ trial: false }) }) })), false);
+  for (const { name, install } of NOT_ON_A_PLAN) assert.equal(onTrial(install), false, name);
+});
+
+test("the trial's badge is its name, with no price and no 30 days", () => {
+  assert.equal(planBadge(onFreeTrial()), "Free trial");
+  // Whatever name came with the row.
+  assert.equal(planBadge(onFreeTrial({}, { name: "" })), "Free trial");
+  assert.doesNotMatch(planBadge(onFreeTrial())!, /\$|30 days/);
+});
+
+test("the trial's line is the count of the agent's page: what is left and the day it ends", () => {
+  assert.deepEqual(planLine(onFreeTrial(), FMT), { text: "12 of 20 trial uses left. Your free trial ends on 20 Oct.", tone: "ok" });
+  assert.equal(
+    planLine(onFreeTrial(), FMT)!.text,
+    trialCountLine({ plan: planCountOf(trialPlan())!, endsAt: OCT_20, perUse: null, dates: { timeZone: "UTC" } }),
+  );
+  // From 85% used: the same words, in the tone of a plan's warning.
+  assert.deepEqual(planLine(onFreeTrial({}, { usedUses: 17, remainingUses: 3, warning: 85 as const }), FMT), {
+    text: "3 of 20 trial uses left. Your free trial ends on 20 Oct.",
+    tone: "warn",
+  });
+  // The uses are gone and nothing was agreed per use: asked to choose.
+  assert.deepEqual(planLine(onFreeTrial({}, TRIAL_GONE), FMT), {
+    text: "You have used all 20 uses of your free trial. Choose a plan or pay per use to keep using it.",
+    tone: "warn",
+  });
+  // Agreed to the price per use: told what each one costs now, in the listing's unit.
+  assert.equal(
+    planLine(onFreeTrial({ acceptedPricing: AGREED }, TRIAL_GONE), FMT)!.text,
+    "You have used all 20 uses of your free trial. Each message is now $0.05 from your credits.",
+  );
+  assert.equal(
+    planLine(onFreeTrial({ acceptedPricing: AGREED, listing: listing({ unit: "run" }) }, TRIAL_GONE), FMT)!.text,
+    "You have used all 20 uses of your free trial. Each run is now $0.05 from your credits.",
+  );
+  // The listing asks more than was agreed: nothing is charged until they accept it, so they are asked to choose.
+  assert.equal(
+    planLine(onFreeTrial({ acceptedPricing: AGREED, listing: listing({ pricePerRequestCents: 8 }) }, TRIAL_GONE), FMT)!.text,
+    "You have used all 20 uses of your free trial. Choose a plan or pay per use to keep using it.",
+  );
+  // No longer sold for use: there is nothing to choose, so the line only counts.
+  assert.equal(
+    planLine(onFreeTrial({ listing: listing({ status: "archived" }) }, TRIAL_GONE), FMT)!.text,
+    "You have used all 20 uses of your free trial.",
+  );
+  // Never a renewal, a day the count starts again, or a move, whoever reads it and whatever is on offer.
+  for (const shape of [{}, TRIAL_GONE]) {
+    for (const viewer of [{}, { canSpend: true }, { canSpend: false }]) {
+      assert.doesNotMatch(planLine(onFreeTrial({}, shape), FMT, viewer)!.text, /Renews|starts again|move up|your plan|30 days/i);
+    }
+  }
+});
+
+test("a trial has no renewal to cancel or resume and nothing to move up to", () => {
+  const install = onFreeTrial();
+  assert.equal(planRenewal(install), null);
+  // Even when the trial's own id were among the plans on offer, and when the API said it renews.
+  assert.equal(planRenewal(onFreeTrial({ listing: listing({ plans: [{ ...STARTER, id: "p-trial" }] }) })), null);
+  assert.equal(planRenewal(onFreeTrial({}, { resetsAt: OCT_20 })), null);
+  // Its price of nothing is below every plan: none of them is a move.
+  assert.deepEqual(biggerPlans(install), []);
+  assert.equal(moveUpChoice(install), null);
+  assert.equal(moveUpConfirm(install, PRO), null);
+});
+
+test("stopping a trial says it ends now and cannot be started again, and speaks of no payment", () => {
+  assert.equal(INSTALLED_PLAN_WORDS.stopTrial, "This ends your free trial and your access now. You cannot start the free trial again.");
+  assert.equal(planStopSentence(onFreeTrial(), FMT), INSTALLED_PLAN_WORDS.stopTrial);
+  assert.equal(planStopSentence(onFreeTrial({}, TRIAL_GONE), FMT), INSTALLED_PLAN_WORDS.stopTrial);
+  assert.doesNotMatch(planStopSentence(onFreeTrial(), FMT)!, /paid|refund|renew|30 days/i);
 });

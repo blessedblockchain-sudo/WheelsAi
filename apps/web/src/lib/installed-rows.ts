@@ -14,7 +14,8 @@
  *
  * A use row whose buyer is on a plan is worded by lib/installed-plans.ts:
  * its badge, the count of what is left, moving up, and what stopping gives
- * up. Every other row is what it was before plans existed.
+ * up. So is a row on the listing's free trial, which can only be stopped.
+ * Every other row is what it was before plans existed.
  */
 import type {
   MarketplaceAcceptedPricing,
@@ -139,6 +140,8 @@ export const INSTALLED_WORDS = {
   notOffered: "No longer offered. You will not be charged again.",
   lapsed: "Your subscription has ended. Subscribe again to keep using it.",
   planEnded: "Your plan ended. Choose a plan or pay per use to keep using it.",
+  /** A free trial that is over. The plans and the price per use are chosen on the agent's page, where Open goes. */
+  trialEnded: "Your free trial ended. Choose a plan or pay per use to keep using it.",
   stopped: "You have stopped using this agent.",
   nowFree: "This agent is now free to use on its page.",
   /** Said once to a member who may not move up or resume a renewal. */
@@ -355,6 +358,15 @@ function sellsUseNow(install: InstalledLicence): boolean {
   return install.listing.status === "published" && install.listing.sells === "use";
 }
 
+/**
+ * Whether the plan that is over on this row was the listing's free trial. A
+ * trial is the one row with a count of uses that was agreed at no price, the
+ * mark the API tells a trial by.
+ */
+function trialEnded(install: InstalledLicence): boolean {
+  return install.access === "plan_ended" && install.subscription?.priceCents === 0;
+}
+
 /** What an acceptance of the listing's pricing would agree to; null when it names no price. */
 function offerForUse(install: InstalledLicence): { sentence: string; button: string; monthly: boolean } | null {
   const { listing } = install;
@@ -455,7 +467,10 @@ function lineForUse(install: InstalledLicence, fmt: InstalledFormat): InstalledL
     return offered ? { text: INSTALLED_WORDS.lapsed, tone: "bad" } : notOffered;
   }
   // A plan that is over. The plans and the price per use are chosen on the agent's page, where Open goes.
-  if (access === "plan_ended") return offered ? { text: INSTALLED_WORDS.planEnded, tone: "bad" } : notOffered;
+  if (access === "plan_ended") {
+    if (!offered) return notOffered;
+    return { text: trialEnded(install) ? INSTALLED_WORDS.trialEnded : INSTALLED_WORDS.planEnded, tone: "bad" };
+  }
   if (access === "not_offered" || access === "unlisted") return notOffered;
   // none, uninstalled: a licence that grants nothing.
   return { text: INSTALLED_WORDS.stopped, tone: "bad" };
@@ -465,7 +480,10 @@ function lineForUse(install: InstalledLicence, fmt: InstalledFormat): InstalledL
  * A buyer on a plan. The badge is the plan and the price they agreed to, the
  * line counts what is left, and the row offers what a plan can do: move up
  * (only when the listing offers a plan that costs more), cancel or resume
- * the renewal, stop.
+ * the renewal, stop. On the free trial the badge is "Free trial", the line
+ * is the trial's count, and stopping is all a plan's actions leave: a trial
+ * has no renewal and nobody moves up from one (lib/installed-plans.ts
+ * answers so for each).
  */
 function rowForPlan(install: InstalledLicence, fmt: InstalledFormat, viewer: InstalledViewer): InstalledRow {
   const { listing } = install;

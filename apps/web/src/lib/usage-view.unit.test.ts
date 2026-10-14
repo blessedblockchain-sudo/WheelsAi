@@ -9,7 +9,7 @@ import { test } from "node:test";
 
 import type { MarketplaceUsage, MarketplaceUsageRow, PaidUsePlan } from "./api";
 import { INSTALLED_WORDS } from "./installed-rows";
-import { planCountLine } from "./use-plans";
+import { planCountLine, trialCountLine, planCountOf } from "./use-plans";
 import {
   ADD_CREDITS_HREF,
   USAGE_BAR_MARKS,
@@ -307,4 +307,71 @@ test("nothing a buyer must not read is in any word or any row", () => {
   assert.equal(/unlimited|token|model|organi[sz]ation|subscribers?\b|\u2014/i.test(drawn), false);
   // No raw code of the API inside a sentence.
   assert.equal(/plan_ended|listing_pricing|past_due|plan_used_up/.test(drawn.replace(/"access":"[a-z_]+"/g, "")), false);
+});
+
+// ---------------------------------------------------------------------------
+// A row on a listing's free trial
+// ---------------------------------------------------------------------------
+
+const TRIAL_ENDS = "2026-10-20T12:00:00.000Z";
+
+/** A trial's plan as the API sends it: no extra price, never a day the count starts again. */
+function trialPlan(over: Partial<PaidUsePlan> = {}): PaidUsePlan {
+  return {
+    id: "p-trial",
+    name: "Free trial",
+    trial: true,
+    includedUses: 20,
+    carriedUses: 0,
+    usedUses: 8,
+    remainingUses: 12,
+    extraUsePriceCents: null,
+    warning: null,
+    ...over,
+  };
+}
+
+const trialRow = (over: Partial<MarketplaceUsageRow> = {}, planOver: Partial<PaidUsePlan> = {}) =>
+  row({ plan: trialPlan(planOver), periodEndsAt: TRIAL_ENDS, ...over });
+
+test("a trial's row is named Free trial and its line is the trial's count, with no extra uses", () => {
+  const view = usageRow(trialRow());
+  assert.equal(view.planName, "Free trial");
+  assert.equal(view.countLine, "12 of 20 trial uses left. Your free trial ends on 20 Oct.");
+  assert.equal(view.countLine, trialCountLine({ plan: planCountOf(trialPlan())!, endsAt: TRIAL_ENDS, dates: { timeZone: "UTC" } }));
+  assert.equal(view.countTone, "ok");
+  assert.equal(view.extraLine, null);
+  assert.equal(view.renewalLine, null);
+  assert.equal(view.statusLine, null);
+  assert.equal(view.bar?.usedText, "8 of 20 uses used");
+  assert.equal(view.bar?.label, "Free trial: 8 of 20 uses used.");
+  // Whatever name came with the row, and whatever it says of a renewal: a trial has neither.
+  assert.equal(usageRow(trialRow({ renewalPastDue: true }, { name: "Starter" })).planName, "Free trial");
+  assert.equal(usageRow(trialRow({ renewalPastDue: true })).renewalLine, null);
+  assert.doesNotMatch(view.countLine!, /Renews|starts again|move up|your plan/i);
+  // From 85% used the bar says so, and the line beside it takes the same tone with its words unchanged.
+  const low = usageRow(trialRow({}, { usedUses: 17, remainingUses: 3, warning: 85 as const }));
+  assert.equal(low.bar?.levelLabel, USAGE_WORDS.level85);
+  assert.equal(low.countTone, "warn");
+  assert.equal(low.countLine, "3 of 20 trial uses left. Your free trial ends on 20 Oct.");
+});
+
+test("a trial whose uses are gone says so; what was charged past it is never left out", () => {
+  const gone = { usedUses: 20, remainingUses: 0, warning: 100 as const };
+  const view = usageRow(trialRow({}, gone));
+  // This read does not say what the buyer agreed to per use, so the line does not guess what comes next.
+  assert.equal(view.countLine, "You have used all 20 uses of your free trial.");
+  assert.equal(view.countTone, "warn");
+  assert.equal(view.bar?.levelLabel, USAGE_WORDS.level100);
+  assert.equal(view.extraLine, null);
+  // A buyer who agreed to pay per use was charged for the uses past the trial: their cost is shown.
+  const paid = usageRow(trialRow({ extraThisPeriod: { uses: 3, cents: 15 } }, gone));
+  assert.equal(paid.extraLine, "3 extra uses this period: $0.15.");
+  assert.equal(paid.countLine, "You have used all 20 uses of your free trial.");
+});
+
+test("a paid plan's row is what it was, whether or not the API says it is not a trial", () => {
+  assert.deepEqual(usageRow(row({ plan: plan({ trial: false }) })), usageRow(row()));
+  assert.equal(usageRow(row()).planName, "Starter");
+  assert.equal(usageRow(row()).countLine, planCountLine({ plan: plan(), endsAt: RESET, dates: { timeZone: "UTC" } }));
 });

@@ -15,13 +15,17 @@
  * never count differently. Every number here was sent by the API, and no date
  * is worked out in this file.
  *
+ * A row on a listing's free trial is named "Free trial" and its line is the
+ * trial's own count (`trialCountLine`), which names the day the trial ends
+ * and never a renewal.
+ *
  * Never said here: tokens, the model, the organization that sells an agent,
  * anything of another buyer, or a count that has no end.
  */
 import type { MarketplaceUsage, MarketplaceUsageRow, UsesAndCents } from "./api";
 import { INSTALLED_WORDS } from "./installed-rows";
 import { dollars } from "./paid-use";
-import { planCountLine, planCountOf, type PlanCount } from "./use-plans";
+import { TRIAL_WORDS, planCountLine, planCountOf, trialCountLine, type PlanCount } from "./use-plans";
 
 // ---------------------------------------------------------------------------
 // Words and addresses
@@ -193,9 +197,27 @@ export function usageRow(row: MarketplaceUsageRow): UsageRowView {
     };
   }
 
+  const extra = spent(row.extraThisPeriod);
+  if (row.plan.trial === true) {
+    // A free trial has one name everywhere, and no renewal to be retried or to wait for. What the buyer
+    // agreed to per use is not in this read, so when the uses are gone the line says that and no more.
+    return {
+      ...base,
+      planName: TRIAL_WORDS.name,
+      bar: usageBar(count, TRIAL_WORDS.name),
+      renewalLine: null,
+      countLine: trialCountLine({ plan: count, endsAt: row.periodEndsAt, dates: { timeZone: PLAN_DAY_ZONE } }),
+      // From 85% used the bar says so at its warning level, and the line beside it takes the same tone.
+      countTone: count.remainingUses > 0 && count.warning === null ? "ok" : "warn",
+      // The trial's own uses are never extra ones. Uses past them are charged only to a buyer who agreed
+      // to the price per use, and what was charged is never left out of this page.
+      extraLine: extra ? extraUsesLine(extra) : null,
+      statusLine: null,
+    };
+  }
+
   const planName = row.plan.name.trim() || "Plan";
   const pastDue = row.renewalPastDue === true;
-  const extra = spent(row.extraThisPeriod);
   // Quiet only while there are uses left, no warning, nothing being retried, and the plan will renew.
   const quiet = count.warning === null && count.remainingUses > 0 && Boolean(count.resetsAt) && !pastDue;
   return {

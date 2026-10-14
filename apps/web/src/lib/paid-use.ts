@@ -61,6 +61,10 @@ export const PAID_USE_MESSAGES = {
   includedInSubscription: "Included in your subscription.",
   includedInPlan: "Included in your plan.",
   planEnded: "Your plan ended. Choose a plan or pay per use to keep using it.",
+  // A listing's free trial: some uses for some days, started once by a buyer's organization. Not the
+  // free messages of a listing's own page ("Try it free first"), which are anyone's.
+  includedInTrial: "Included in your free trial.",
+  trialEnded: "Your free trial ended. Choose a plan or pay per use to keep using it.",
   offline: "The agent could not be reached. Check your connection and try again.",
   unknown: "Something went wrong. Please try again.",
 } as const;
@@ -234,11 +238,18 @@ export interface PaidViewInput {
 
 const plural = (count: number, unit: PaidUnit) => `${count} more ${unit}${count === 1 ? "" : "s"}`;
 
-/** The dialog that starts per-use: "Each message costs $0.05, paid from your credits. ..." */
-export function startDialog(price: PaidPrice): PaidDialog {
+/**
+ * The dialog that starts per-use: "Each message costs $0.05, paid from your credits. ..."
+ *
+ * `opening` takes the place of that first sentence for someone whose uses are
+ * not charged from the first one on: on a free trial, where the free uses
+ * come first (lib/use-plans.ts). The rest is said to everyone.
+ */
+export function startDialog(price: PaidPrice, opening?: string): PaidDialog {
+  const first = opening ?? `Each ${price.unit} costs ${dollars(price.cents)}, paid from your credits.`;
   return {
     title: "Start using this agent?",
-    body: `Each ${price.unit} costs ${dollars(price.cents)}, paid from your credits. It is charged when you send it and refunded if the agent does not answer. You can stop at any time.`,
+    body: `${first} It is charged when you send it and refunded if the agent does not answer. You can stop at any time.`,
     confirmLabel: `Start at ${priceLine(price)}`,
   };
 }
@@ -297,7 +308,7 @@ function notStartedSentence(price: PaidPrice, kind: PaidAgentKind): string {
 }
 
 /** The sentence for a price that is not the one the person agreed to. */
-function priceChangedSentence(now: PaidPrice, accepted: PaidUseAccessState["accepted"]): string {
+export function priceChangedSentence(now: PaidPrice, accepted: PaidUseAccessState["accepted"]): string {
   if (now.model === "monthly") {
     // The same amount as before is not a changed price: the subscription ended and the agent is on sale again.
     if (accepted?.pricingModel === "monthly" && accepted.monthlyPriceCents !== now.cents) {
@@ -396,8 +407,10 @@ export function paidView(input: PaidViewInput): PaidView {
     case "plan_ended": {
       if (state.startBlocked) return view("start_blocked", state.startBlocked.message, { price: price ?? pagePrice });
       if (!price) return view("not_offered", PAID_USE_MESSAGES.notOffered);
-      if (!state.canAccept) return view("plan_ended", `${PAID_USE_MESSAGES.planEnded} ${PAID_USE_MESSAGES.askAdmin}`, { price });
-      return view("plan_ended", PAID_USE_MESSAGES.planEnded, offer(price, kind, page.perDay));
+      // What ended was their free trial: said as that, not as a plan.
+      const ended = state.trialEnded === true ? PAID_USE_MESSAGES.trialEnded : PAID_USE_MESSAGES.planEnded;
+      if (!state.canAccept) return view("plan_ended", `${ended} ${PAID_USE_MESSAGES.askAdmin}`, { price });
+      return view("plan_ended", ended, offer(price, kind, page.perDay));
     }
 
     case "not_offered":
@@ -421,11 +434,15 @@ export function paidView(input: PaidViewInput): PaidView {
 
 /**
  * Under an answer: "This message cost $0.05. Your credits: $4.90." On a plan:
- * "Included in your plan.", or "Charged $0.04." for a use past its count.
+ * "Included in your plan.", or "Charged $0.04." for a use past its count. On
+ * a free trial: "Included in your free trial.", and past its uses, for
+ * someone who agreed to the price per use, "Charged $0.05."
  */
 export function chargeLine(billing: PaidUseBilling, unit: PaidUnit): string {
   const planUse = billing.plan?.use;
-  if (planUse === "included") return PAID_USE_MESSAGES.includedInPlan;
+  if (planUse === "included") {
+    return billing.plan?.trial === true ? PAID_USE_MESSAGES.includedInTrial : PAID_USE_MESSAGES.includedInPlan;
+  }
   if (planUse === "extra" && billing.chargedCents > 0) return `Charged ${dollars(billing.chargedCents)}.`;
   if (billing.access === "subscribed") return PAID_USE_MESSAGES.includedInSubscription;
   const word = unit === "run" ? "run" : "message";
@@ -517,6 +534,21 @@ export const PAID_REFUSAL_RULES: Record<string, CodeRule> = {
   already_on_plan: {
     action: "none",
     fallback: "You already have a plan or a subscription for this agent that is still running. Nothing was charged.",
+  },
+  // Starting a listing's free trial, which an organization does once. The API's own sentences
+  // (TRIAL_START_MESSAGES in apps/api/src/services/trialStart.ts, PLAN_MOVE_MESSAGES in planMove.ts).
+  trial_already_used: {
+    action: "none",
+    fallback: "You have already used the free trial of this agent. Choose a plan or pay per use to keep using it.",
+  },
+  trial_needs_credits: {
+    action: "add_credits",
+    fallback: "Add credits to your account once to start a free trial. The trial itself costs nothing.",
+  },
+  // Moving up from a free trial: a plan is started over it in the usual way.
+  trial_cannot_move: {
+    action: "none",
+    fallback: "You are on a free trial. Start the plan you want: nothing of the trial is carried over.",
   },
 };
 

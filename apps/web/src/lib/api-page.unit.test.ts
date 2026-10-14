@@ -15,6 +15,7 @@ import {
   apiPageSummary,
   apiPageTitle,
   apiPageView,
+  apiTrialLine,
   createKeyHref,
   isAgentApiPage,
   limitLines,
@@ -411,4 +412,33 @@ test("the listing's page links here only for a listing that sells use of an agen
   assert.equal(apiPageHrefOfListing(listing({}, { isPublic: undefined })), null);
   assert.equal(apiPageHrefOfListing(listing({}, null)), null);
   assert.equal(apiPageHrefOfListing(null), null);
+});
+
+// ============================================
+// The free trial, in one line
+// ============================================
+
+const TRIAL = { id: "t1", includedUses: 20, days: 7 };
+
+test("a listing that offers a free trial says so in one line, and where it is started", () => {
+  assert.equal(apiTrialLine(TRIAL), "Try 20 uses free for 7 days, started on the agent's page.");
+  assert.equal(apiTrialLine({ id: "t", includedUses: 1, days: 1 }), "Try 1 use free for 1 day, started on the agent's page.");
+  assert.equal(apiPageView(chatPage({ trial: TRIAL }), "https://x.test")?.trialLine, apiTrialLine(TRIAL));
+  // With no paid plan too: the trial is offered beside the price per use.
+  assert.equal(apiPageView(taskPage({ trial: TRIAL }), "https://x.test")?.trialLine, apiTrialLine(TRIAL));
+});
+
+test("no line about a trial when the listing offers none, cannot be read, or is sold by the month", () => {
+  const none = [
+    chatPage(),
+    chatPage({ trial: null }),
+    chatPage({ trial: { id: "t1", includedUses: 0, days: 7 } }),
+    chatPage({ trial: { id: "", includedUses: 20, days: 7 } }),
+    monthlyPage({ trial: TRIAL }),
+  ];
+  for (const page of none) assert.equal(apiPageView(page, "https://x.test")?.trialLine, null);
+  // The rest of the page is what it was.
+  const { trialLine: _with, ...withTrial } = apiPageView(chatPage({ trial: TRIAL }), "https://x.test")!;
+  const { trialLine: _without, ...without } = apiPageView(chatPage(), "https://x.test")!;
+  assert.deepEqual(withTrial, without);
 });

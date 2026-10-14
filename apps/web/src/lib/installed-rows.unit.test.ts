@@ -762,3 +762,95 @@ test("the page says who to ask once, however many rows hold something back", () 
   assert.equal(askAdminOnce([plain, held, held]), INSTALLED_WORDS.askAdmin);
   assert.equal(askAdminOnce([installedRow(onPlan(), FMT)]), null);
 });
+
+// ---------------------------------------------------------------------------
+// A row on the listing's free trial, and after it
+// ---------------------------------------------------------------------------
+
+const TRIAL_ENDS = "2026-10-20T12:00:00.000Z";
+
+function trialRow(over: Partial<InstalledLicence> = {}, planOver: Partial<PaidUsePlan> = {}): InstalledLicence {
+  const plan: PaidUsePlan = {
+    id: "p-trial",
+    name: "Free trial",
+    trial: true,
+    includedUses: 20,
+    carriedUses: 0,
+    usedUses: 8,
+    remainingUses: 12,
+    extraUsePriceCents: null,
+    warning: null,
+    ...planOver,
+  };
+  return using({
+    access: "subscribed",
+    totalRequests: 8,
+    totalSpentCents: 0,
+    acceptedPricing: { pricingModel: null, pricePerRequestCents: null, acceptedAt: null },
+    listing: listing({ plans: TRIAL_PLANS }),
+    subscription: sub({ priceCents: 0, cancelAtPeriodEnd: true, currentPeriodEnd: TRIAL_ENDS, plan }),
+    ...over,
+  });
+}
+
+const TRIAL_PLANS: PlanOffer[] = [
+  { id: "p-starter", name: "Starter", priceCents: 900, includedUses: 500, extraUsePriceCents: null },
+  { id: "p-pro", name: "Pro", priceCents: 2900, includedUses: 2000, extraUsePriceCents: 4 },
+];
+
+test("a trial's row: the badge Free trial, its count, and Stop using as the one thing a plan's actions leave", () => {
+  const row = installedRow(trialRow(), FMT);
+  assert.equal(row.badge, INSTALLED_WORDS.use);
+  assert.equal(row.priceLabel, "Free trial");
+  assert.deepEqual(row.line, { text: "12 of 20 trial uses left. Your free trial ends on 20 Oct.", tone: "ok" });
+  assert.equal(row.openHref, "/a/support-bot");
+  // The listing offers plans that cost more than nothing: none is a move from a trial, and a trial has no renewal.
+  assert.deepEqual(labels(row), ["Open", "View Listing", "Write Review", "Stop using"]);
+  assert.equal(row.askAdmin, undefined);
+  // A member who may not spend has nothing held back from this row, so it is the same row.
+  assert.deepEqual(installedRow(trialRow(), FMT, { canSpend: false }), row);
+  assert.deepEqual(installedConfirm(trialRow(), "uninstall", FMT), {
+    title: "Stop using Support Bot?",
+    description: "This ends your free trial and your access now. You cannot start the free trial again.",
+    confirmLabel: "Stop using",
+    destructive: true,
+  });
+});
+
+test("a trial whose uses are gone: asked to choose, or told the price agreed to, with the way to the agent's page", () => {
+  const gone = { usedUses: 20, remainingUses: 0, warning: 100 as const };
+  const row = installedRow(trialRow({}, gone), FMT);
+  assert.deepEqual(row.line, {
+    text: "You have used all 20 uses of your free trial. Choose a plan or pay per use to keep using it.",
+    tone: "warn",
+  });
+  assert.deepEqual(labels(row), ["Open", "View Listing", "Write Review", "Stop using"]);
+  const agreed = { pricingModel: "per_request" as const, pricePerRequestCents: 5, acceptedAt: "2026-10-13T12:00:00.000Z" };
+  assert.equal(
+    installedRow(trialRow({ acceptedPricing: agreed }, gone), FMT).line?.text,
+    "You have used all 20 uses of your free trial. Each message is now $0.05 from your credits.",
+  );
+});
+
+test("after a trial ended the row says so in the trial's words and links to the agent's page; a paid plan keeps its own", () => {
+  const ended = trialRow({
+    access: "plan_ended",
+    subscription: sub({ status: "expired", hasAccess: false, priceCents: 0, cancelAtPeriodEnd: true, plan: null }),
+  });
+  const row = installedRow(ended, FMT);
+  assert.equal(INSTALLED_WORDS.trialEnded, "Your free trial ended. Choose a plan or pay per use to keep using it.");
+  assert.deepEqual(row.line, { text: INSTALLED_WORDS.trialEnded, tone: "bad" });
+  assert.equal(row.openHref, "/a/support-bot");
+  assert.deepEqual(labels(row), ["Open", "View Listing", "Write Review", "Stop using"]);
+  // A paid plan that ended, and a row whose price was never told.
+  for (const priceCents of [900, null]) {
+    const paid = trialRow({ access: "plan_ended", subscription: sub({ status: "expired", hasAccess: false, priceCents, plan: null }) });
+    assert.deepEqual(installedRow(paid, FMT).line, { text: INSTALLED_WORDS.planEnded, tone: "bad" });
+  }
+  // No longer offered wins, as for any plan that is over.
+  const gone = installedRow({ ...ended, listing: listing({ status: "archived" }) }, FMT);
+  assert.equal(gone.line?.text, INSTALLED_WORDS.notOffered);
+  // A buyer who agreed to pay per use goes on per use when the trial ends: today's row.
+  const perUse = using({ subscription: sub({ status: "expired", hasAccess: false, priceCents: 0, plan: null }) });
+  assert.deepEqual(installedRow(perUse, FMT).line, installedRow(using(), FMT).line);
+});

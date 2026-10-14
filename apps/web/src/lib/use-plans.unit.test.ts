@@ -14,10 +14,12 @@ import type {
   PaidUseTerms,
   PlanOffer,
   PublicAgentPaidTerms,
+  TrialOffer,
 } from "./api";
 import { PAID_REFUSAL_RULES, PAID_USE_MESSAGES, chargeLine, noticeOfView, paidRefusalNotice, paidView } from "./paid-use";
 import {
   MOVE_UP_WORDS,
+  TRIAL_WORDS,
   USE_PLAN_WORDS,
   accessAfterRefusal,
   accessAfterUse,
@@ -38,6 +40,12 @@ import {
   planTermsOf,
   planUsesLine,
   plansOf,
+  trialAfterLine,
+  trialCountLine,
+  trialOfferLine,
+  trialOfferOf,
+  trialStartDialog,
+  trialTermsOf,
 } from "./use-plans";
 
 const UTC = { timeZone: "UTC" };
@@ -965,7 +973,8 @@ test("someone on a plan is offered the bigger plans, with what a move would carr
   assert.deepEqual(moveUp, { cards: [PRO], canMove: true, askAdmin: null, carriedUses: 312, leftUses: 312 });
   // The rest of the page is planGateView's: the count as its sentence, and no card to start.
   assert.equal(view.sentence, "312 of 500 uses left. Renews 12 Nov.");
-  assert.deepEqual({ view, plans }, gate(onStarter()));
+  const drawn = gate(onStarter());
+  assert.deepEqual({ view, plans }, { view: drawn.view, plans: drawn.plans });
   assert.equal(plans.place, "none");
   // After an earlier move: 500 included, 120 brought in, 30 used. At most the 500 are carried.
   assert.equal(page(onStarter({}, { carriedUses: 120, usedUses: 30, remainingUses: 590 })).moveUp?.carriedUses, 500);
@@ -1060,6 +1069,504 @@ test("no sentence of moving up has an em dash, a raw code, or a word about what 
     assert.equal(/[\u2013\u2014]/.test(sentence), false, sentence);
     assert.doesNotMatch(sentence, /not_on_plan|same_plan|not_a_bigger_plan|pricing_changed|switchNow/, sentence);
     assert.doesNotMatch(sentence, /token|model|organization|unlimited|subscriber|trial|refund/i, sentence);
+    assert.doesNotMatch(sentence, /undefined|null|NaN/, sentence);
+  }
+});
+
+// ============================================
+// The free trial
+// ============================================
+
+const TRIAL: TrialOffer = { id: "t1", includedUses: 20, days: 7 };
+const OCT_20 = "2026-10-20T09:00:00.000Z";
+const NO_TRIAL = { offer: null, held: false, afterLine: null };
+/** The API's own sentences (services/trialStart.ts, services/planMove.ts, services/paidUse.ts). */
+const API_ALREADY_USED = "You have already used the free trial of this agent. Choose a plan or pay per use to keep using it.";
+const API_NEEDS_CREDITS = "Add credits to your account once to start a free trial. The trial itself costs nothing.";
+const API_CANNOT_MOVE = "You are on a free trial. Start the plan you want: nothing of the trial is carried over.";
+const API_TRIAL_USED_UP =
+  "You have used all 20 uses of your free trial. Choose a plan or pay per use to keep using it. Nothing was charged.";
+const API_TRIAL_ENDED = "Your free trial ended. Choose a plan or pay per use to keep using it.";
+
+/** What the access says of a trial's row: no price, no extra price, never a day on which the count starts again. */
+const onTrialPlan = (extra: Partial<PaidUsePlan> = {}): PaidUsePlan => ({
+  id: "t1",
+  name: "Free trial",
+  trial: true,
+  includedUses: 20,
+  carriedUses: 0,
+  usedUses: 8,
+  remainingUses: 12,
+  extraUsePriceCents: null,
+  warning: null,
+  ...extra,
+});
+const TRIAL_SUB = { status: "active", currentPeriodEnd: OCT_20, cancelAtPeriodEnd: true, graceEndsAt: null };
+/** Started with the trial: no price per use agreed to. The subscription's own price is nothing. */
+const AGREED_NOTHING = { pricingModel: null, pricePerRequestCents: null, monthlyPriceCents: 0 };
+const AGREED_PER_USE = { pricingModel: "per_request", pricePerRequestCents: 5, monthlyPriceCents: 0 };
+
+const onTrial = (extra: Partial<PaidUseAccessState> = {}, plan: Partial<PaidUsePlan> = {}) =>
+  state("subscribed", {
+    plans: OFFERED,
+    plan: onTrialPlan(plan),
+    trial: TRIAL,
+    trialAvailable: false,
+    trialNeedsCredits: false,
+    trialEnded: false,
+    accepted: AGREED_NOTHING,
+    subscription: TRIAL_SUB,
+    ...extra,
+  });
+const GONE = { usedUses: 20, remainingUses: 0, warning: 100 as const };
+/** Someone who could take the trial: nothing started, the listing offers it. */
+const offered = (access: PaidUseAccess = "none", extra: Partial<PaidUseAccessState> = {}) =>
+  state(access, { trial: TRIAL, trialAvailable: true, trialNeedsCredits: false, trialEnded: false, ...extra });
+
+test("the words of a free trial, with its numbers", () => {
+  assert.equal(TRIAL_WORDS.name, "Free trial");
+  assert.equal(TRIAL_WORDS.startButton, "Start the free trial");
+  assert.equal(TRIAL_WORDS.needsCredits, "Add credits to your account once to start it. The trial itself costs nothing.");
+  assert.equal(trialOfferLine(TRIAL), "Try 20 uses free for 7 days. Nothing is charged and it does not renew.");
+  assert.equal(trialOfferLine({ id: "t", includedUses: 1, days: 1 }), "Try 1 use free for 1 day. Nothing is charged and it does not renew.");
+  assert.deepEqual(trialStartDialog(TRIAL), {
+    title: "Start the free trial?",
+    body: "Starts a free trial of 20 uses for 7 days. Nothing is charged, now or later. When it ends you choose a plan or pay per use.",
+    confirmLabel: "Start the free trial",
+  });
+  assert.equal(
+    trialAfterLine({ model: "per_request", cents: 5, unit: "message" }),
+    "After your free uses, each message is $0.05 from your credits.",
+  );
+  assert.equal(trialAfterLine({ model: "per_request", cents: 10, unit: "run" }), "After your free uses, each run is $0.10 from your credits.");
+});
+
+test("a trial is kept only with every term, and starting it sends its own terms at no price", () => {
+  assert.deepEqual(trialOfferOf(TRIAL), TRIAL);
+  // Built field by field: whatever else came with it stays behind.
+  assert.deepEqual(trialOfferOf({ ...TRIAL, subscribers: 3, name: "Free trial" }), TRIAL);
+  for (const bad of [null, undefined, "trial", [], {}, { ...TRIAL, id: "" }, { ...TRIAL, includedUses: 0 }, { ...TRIAL, includedUses: 2.5 }, { ...TRIAL, days: 0 }, { id: "t1", includedUses: 20 }]) {
+    assert.equal(trialOfferOf(bad), null, JSON.stringify(bad));
+  }
+  assert.deepEqual(trialTermsOf(TRIAL), { id: "t1", priceCents: 0, includedUses: 20, extraUsePriceCents: null });
+  assert.deepEqual(Object.keys(trialTermsOf(TRIAL)).sort(), ["extraUsePriceCents", "id", "includedUses", "priceCents"]);
+});
+
+test("the count line of a free trial: what is left and the day it ends, then what happens when the uses are gone", () => {
+  const plan = planCountOf(onTrialPlan())!;
+  assert.equal(trialCountLine({ plan, endsAt: OCT_20, dates: UTC }), "12 of 20 trial uses left. Your free trial ends on 20 Oct.");
+  // The day is the API's. With none, none is said, and none is ever worked out.
+  assert.equal(trialCountLine({ plan, dates: UTC }), "12 of 20 trial uses left.");
+  assert.equal(
+    trialCountLine({ plan: planCountOf(onTrialPlan({ includedUses: 1, usedUses: 0, remainingUses: 1 }))!, endsAt: OCT_20, dates: UTC }),
+    "1 of 1 trial use left. Your free trial ends on 20 Oct.",
+  );
+  // 85% of a trial is not a warning anyone is sent: the line stays the count.
+  assert.equal(
+    trialCountLine({ plan: planCountOf(onTrialPlan({ usedUses: 17, remainingUses: 3, warning: 85 }))!, endsAt: OCT_20, dates: UTC }),
+    "3 of 20 trial uses left. Your free trial ends on 20 Oct.",
+  );
+  const gone = planCountOf(onTrialPlan(GONE))!;
+  assert.equal(
+    trialCountLine({ plan: gone, endsAt: OCT_20, perUse: null, dates: UTC }),
+    "You have used all 20 uses of your free trial. Choose a plan or pay per use to keep using it.",
+  );
+  assert.equal(
+    trialCountLine({ plan: gone, endsAt: OCT_20, perUse: { model: "per_request", cents: 5, unit: "message" }, dates: UTC }),
+    "You have used all 20 uses of your free trial. Each message is now $0.05 from your credits.",
+  );
+  assert.equal(
+    trialCountLine({ plan: gone, perUse: { model: "per_request", cents: 10, unit: "run" } }),
+    "You have used all 20 uses of your free trial. Each run is now $0.10 from your credits.",
+  );
+  // A page that was not told what the buyer agreed to says only that they are gone.
+  assert.equal(trialCountLine({ plan: gone, endsAt: OCT_20, dates: UTC }), "You have used all 20 uses of your free trial.");
+  // A trial of one use reads as the API says it.
+  assert.equal(
+    trialCountLine({ plan: planCountOf(onTrialPlan({ includedUses: 1, usedUses: 1, remainingUses: 0 }))!, perUse: null }),
+    "You have used the 1 use of your free trial. Choose a plan or pay per use to keep using it.",
+  );
+  // Never a renewal, a day the count starts again, or a move.
+  for (const perUse of [undefined, null, { model: "per_request" as const, cents: 5, unit: "message" as const }]) {
+    for (const p of [plan, gone]) {
+      assert.doesNotMatch(trialCountLine({ plan: p, endsAt: OCT_20, perUse, dates: UTC }), /Renews|starts again|move up|your plan/i);
+    }
+  }
+});
+
+test("the trial is offered above the cards to someone whose organization can start it", () => {
+  const { view, plans, trial } = gate(offered());
+  assert.deepEqual(trial, {
+    offer: { trial: TRIAL, line: "Try 20 uses free for 7 days. Nothing is charged and it does not renew.", kind: "start", after: null, note: null },
+    held: false,
+    afterLine: null,
+  });
+  // The rest of the page is what it is with no trial: the cards, pay as you go, today's start.
+  const plain = gate(state("none"));
+  assert.deepEqual({ view, plans }, { view: plain.view, plans: plain.plans });
+  // After a paid plan ended, on a changed price, and for someone who pays per use: offered the same way.
+  for (const access of ["plan_ended", "pricing_changed", "listing_pricing", "uninstalled"] as const) {
+    const accepted = { pricingModel: "per_request", pricePerRequestCents: 3, monthlyPriceCents: null };
+    assert.equal(gate(offered(access, { accepted })).trial.offer?.kind, "start", access);
+  }
+});
+
+test("someone who already pays per use is told what a use costs after the free ones, before they start", () => {
+  const price = { model: "per_request" as const, cents: 5, unit: "message" as const };
+  const after = "After your free uses, each message is $0.05 from your credits.";
+  assert.equal(trialOfferLine(TRIAL, price), `Try 20 uses free for 7 days. ${after}`);
+  assert.equal(trialStartDialog(TRIAL, price).body, `Starts a free trial of 20 uses for 7 days. The free uses cost nothing. ${after}`);
+
+  // The start keeps their agreement, so a use past the free ones is charged with no further question.
+  const agreed = (cents: number) => ({ pricingModel: "per_request", pricePerRequestCents: cents, monthlyPriceCents: null });
+  for (const cents of [5, 9]) {
+    const offer = gate(offered("listing_pricing", { accepted: agreed(cents) })).trial.offer;
+    assert.equal(offer?.kind, "start");
+    assert.equal(offer?.after?.cents, 5, "the listing's price, which is what is charged");
+    assert.equal(offer?.line, `Try 20 uses free for 7 days. ${after}`);
+    for (const said of [offer?.line ?? "", trialStartDialog(TRIAL, offer?.after).body]) {
+      assert.match(said, /\$0\.05/);
+      assert.doesNotMatch(said, /now or later|you choose|Nothing is charged/);
+    }
+  }
+  // A member of such an organization, and one that has yet to add credits, read the same line.
+  assert.equal(gate(offered("listing_pricing", { accepted: agreed(5), canAccept: false })).trial.offer?.line, `Try 20 uses free for 7 days. ${after}`);
+  assert.equal(
+    gate(offered("listing_pricing", { accepted: agreed(5), trialAvailable: false, trialNeedsCredits: true })).trial.offer?.after?.cents,
+    5,
+  );
+
+  // Agreed to nothing, a licence that was stopped, or a price that went up since: nothing is charged without
+  // a new yes, and the offer and its dialog are today's word for word.
+  const plain = trialStartDialog(TRIAL);
+  for (const state of [offered(), offered("uninstalled", { accepted: agreed(5) }), offered("pricing_changed", { accepted: agreed(3) }), offered("plan_ended")]) {
+    const offer = gate(state).trial.offer;
+    assert.equal(offer?.after, null, state.access);
+    assert.equal(offer?.line, "Try 20 uses free for 7 days. Nothing is charged and it does not renew.", state.access);
+    assert.deepEqual(trialStartDialog(TRIAL, offer?.after), plain, state.access);
+  }
+});
+
+test("a trial that waits for credits says so with no way to start, and one that cannot be started says nothing", () => {
+  const waits = gate(offered("none", { trialAvailable: false, trialNeedsCredits: true })).trial.offer;
+  assert.deepEqual(waits, {
+    trial: TRIAL,
+    line: "Try 20 uses free for 7 days. Nothing is charged and it does not renew.",
+    kind: "needs_credits",
+    after: null,
+    note: "Add credits to your account once to start it. The trial itself costs nothing.",
+  });
+  // Used before, or running: the API says it is not available, and nothing about a trial is shown.
+  assert.deepEqual(gate(offered("none", { trialAvailable: false })).trial, NO_TRIAL);
+  assert.deepEqual(gate(offered("plan_ended", { trialAvailable: false, trialEnded: true })).trial, NO_TRIAL);
+  // The listing offers none, or what it sent cannot be read.
+  assert.deepEqual(gate(offered("none", { trial: null })).trial, NO_TRIAL);
+  assert.deepEqual(gate(offered("none", { trial: { id: "t1", includedUses: 0, days: 7 } })).trial, NO_TRIAL);
+  // An API that says nothing of a trial: the page of before.
+  assert.deepEqual(gate(state("none")).trial, NO_TRIAL);
+  // Never to the agent's own maker, where a start is held back, where use is no longer sold, or on a month or a plan.
+  assert.deepEqual(gate(offered("own_agent")).trial, NO_TRIAL);
+  assert.deepEqual(gate(offered("none", { startBlocked: { code: "copy_subscription_active", message: "Held.", until: NOV_12 } })).trial, NO_TRIAL);
+  assert.deepEqual(gate(offered("not_offered")).trial, NO_TRIAL);
+  assert.deepEqual(gate(offered("none", { terms: null })).trial, NO_TRIAL);
+  assert.deepEqual(gate(offered("subscribed", { plan: onPlan(), subscription: SUB, accepted: AGREED_STARTER })).trial, NO_TRIAL);
+  const monthly: PaidUseTerms = { ...PER_USE, pricingModel: "monthly", pricePerRequestCents: null, monthlyPriceCents: 900, unit: "month" };
+  assert.deepEqual(gate(offered("none", { terms: monthly })).trial, NO_TRIAL);
+});
+
+test("signed out, the trial is said with the page's own sign-in; a member who may not start is told who can, once", () => {
+  const signedOut = gate(null, { ...PAGE_WITH_PLANS, trial: TRIAL });
+  assert.deepEqual(signedOut.trial.offer, { trial: TRIAL, line: trialOfferLine(TRIAL), kind: "signin", after: null, note: null });
+  assert.deepEqual(signedOut.view.action, { kind: "signin", label: "Sign in" });
+  assert.deepEqual(gate(null).trial, NO_TRIAL);
+  assert.deepEqual(gate(null, { ...PAGE_WITH_PLANS, trial: null }).trial, NO_TRIAL);
+  // Signed in, the access is what counts: a trial on the page that the access does not offer is not shown.
+  assert.deepEqual(gate(state("none"), { ...PAGE_WITH_PLANS, trial: TRIAL }).trial, NO_TRIAL);
+
+  // The page's sentence already asks for an owner or admin: the trial does not ask again, nor do the cards.
+  const member = gate(offered("none", { canAccept: false }));
+  assert.equal(member.view.sentence, PAID_USE_MESSAGES.askAdmin);
+  assert.deepEqual(member.trial.offer, { trial: TRIAL, line: trialOfferLine(TRIAL), kind: "ask_admin", after: null, note: null });
+  assert.equal(member.plans.askAdmin, null);
+  // Someone who pays per use reads their price as the sentence: the trial says who to ask.
+  const paying = gate(offered("listing_pricing", { canAccept: false, accepted: { pricingModel: "per_request", pricePerRequestCents: 5, monthlyPriceCents: null } }));
+  assert.equal(paying.trial.offer?.kind, "ask_admin");
+  assert.equal(paying.trial.offer?.note, PAID_USE_MESSAGES.askAdmin);
+  // Said once: their plans are behind "See plans", and the cards there do not ask again.
+  assert.equal(paying.plans.place, "behind");
+  assert.equal(paying.plans.askAdmin, null);
+  // Needing credits is said to a member too: adding them is the one thing missing.
+  assert.equal(gate(offered("none", { canAccept: false, trialAvailable: false, trialNeedsCredits: true })).trial.offer?.kind, "needs_credits");
+});
+
+test("on a trial the sentence is its count, the plans can be started, pay as you go is offered, and nothing says move up", () => {
+  const { view, plans, trial, moveUp } = page(onTrial());
+  assert.equal(view.kind, "in_use");
+  assert.equal(view.usable, true);
+  assert.equal(view.sentence, "12 of 20 trial uses left. Your free trial ends on 20 Oct.");
+  assert.deepEqual(trial, { offer: null, held: true, afterLine: null });
+  assert.deepEqual(plans, {
+    cards: OFFERED,
+    place: "first",
+    canStart: true,
+    askAdmin: null,
+    payAsYouGo: "Or pay as you go: $0.05 a message",
+    countLine: null,
+  });
+  // Today's start per use, which takes effect during the trial. Its dialog says the free uses come first.
+  assert.deepEqual(view.action, { kind: "start", label: "Start using" });
+  assert.equal(view.acceptNewPricing, false);
+  assert.deepEqual(view.dialog, {
+    title: "Start using this agent?",
+    body: "After your free uses, each message is $0.05 from your credits. It is charged when you send it and refunded if the agent does not answer. You can stop at any time.",
+    confirmLabel: "Start at $0.05 per message",
+  });
+  // The trial's price of nothing would make every plan a bigger one: nobody moves up from a trial.
+  assert.equal(moveUp, null);
+  assert.doesNotMatch(view.sentence, /move up|Renews/i);
+  // A plan's start dialog is the one a plan already has.
+  assert.deepEqual(planStartDialog(plans.cards[0]!), planStartDialog(STOPS));
+});
+
+test("on a trial, someone who agreed to the price per use reads what comes after and is not offered it again", () => {
+  const { view, plans, trial } = page(onTrial({ accepted: AGREED_PER_USE }));
+  assert.equal(view.sentence, "12 of 20 trial uses left. Your free trial ends on 20 Oct.");
+  assert.equal(trial.afterLine, "After your free uses, each message is $0.05 from your credits.");
+  assert.equal(plans.payAsYouGo, null);
+  assert.deepEqual(view.action, { kind: "none", label: null });
+  assert.equal(view.dialog, null);
+  // The plans stay on offer the whole trial long.
+  assert.deepEqual(plans.cards, OFFERED);
+  assert.equal(plans.canStart, true);
+  // A task agent counts runs.
+  const run = planPageView({
+    authed: true,
+    access: onTrial({ accepted: AGREED_PER_USE, terms: { ...PER_USE, unit: "run" } }),
+    page: { ...PAGE_WITH_PLANS, unit: "run" },
+    kind: "task",
+    dates: UTC,
+  });
+  assert.equal(run.trial.afterLine, "After your free uses, each run is $0.05 from your credits.");
+  // The listing asks less than was agreed: what is charged is the listing's price.
+  const cheaper = page(onTrial({ accepted: { ...AGREED_PER_USE, pricePerRequestCents: 8 } }));
+  assert.equal(cheaper.trial.afterLine, "After your free uses, each message is $0.05 from your credits.");
+});
+
+test("when the trial's uses are gone: asked to choose, or told the price they agreed to", () => {
+  const choose = page(onTrial({}, GONE));
+  assert.equal(choose.view.sentence, "You have used all 20 uses of your free trial. Choose a plan or pay per use to keep using it.");
+  assert.equal(choose.plans.place, "first");
+  assert.equal(choose.plans.payAsYouGo, "Or pay as you go: $0.05 a message");
+  assert.deepEqual(choose.view.action, { kind: "start", label: "Start using" });
+  // No free use is left to speak of: the dialog is today's.
+  assert.match(choose.view.dialog!.body, /^Each message costs \$0\.05, paid from your credits\./);
+  assert.equal(choose.trial.afterLine, null);
+
+  const paying = page(onTrial({ accepted: AGREED_PER_USE }, GONE));
+  assert.equal(paying.view.sentence, "You have used all 20 uses of your free trial. Each message is now $0.05 from your credits.");
+  assert.equal(paying.trial.afterLine, null, "the sentence already says it");
+  assert.equal(paying.plans.payAsYouGo, null);
+  assert.deepEqual(paying.view.action, { kind: "none", label: null });
+  assert.equal(paying.moveUp, null);
+});
+
+test("on a trial, a price that went up since they agreed is accepted by the page's own step", () => {
+  const dearer = { ...PER_USE, pricePerRequestCents: 8 };
+  const { view, plans, trial } = page(onTrial({ accepted: AGREED_PER_USE, terms: dearer }));
+  assert.equal(view.sentence, "12 of 20 trial uses left. Your free trial ends on 20 Oct.");
+  assert.equal(
+    trial.afterLine,
+    "The owner changed the price to $0.08 per message. You agreed to $0.05. Nothing is charged until you accept the new price.",
+  );
+  assert.deepEqual(view.action, { kind: "accept", label: "Accept $0.08 per message" });
+  assert.equal(view.acceptNewPricing, true);
+  assert.deepEqual(view.price, { model: "per_request", cents: 8, unit: "message" });
+  assert.equal(plans.payAsYouGo, null);
+  // With the uses gone they are stopped until they accept it: asked to choose, never told a price they did not agree to.
+  const gone = page(onTrial({ accepted: AGREED_PER_USE, terms: dearer }, GONE));
+  assert.equal(gone.view.sentence, "You have used all 20 uses of your free trial. Choose a plan or pay per use to keep using it.");
+  assert.deepEqual(gone.view.action, { kind: "accept", label: "Accept $0.08 per message" });
+});
+
+test("on a trial, a member who may not spend sees the cards with no button and is told who to ask", () => {
+  const { view, plans } = page(onTrial({ canAccept: false }));
+  assert.equal(view.sentence, "12 of 20 trial uses left. Your free trial ends on 20 Oct.");
+  assert.deepEqual(view.action, { kind: "none", label: null });
+  assert.equal(plans.canStart, false);
+  assert.equal(plans.askAdmin, PAID_USE_MESSAGES.askAdmin);
+  // With no plan on offer there is still pay as you go to choose, and they are still told who can.
+  const bare = page(onTrial({ canAccept: false, plans: [] }));
+  assert.deepEqual(bare.plans.cards, []);
+  assert.equal(bare.plans.place, "first");
+  assert.equal(bare.plans.payAsYouGo, "Or pay as you go: $0.05 a message");
+  assert.equal(bare.plans.askAdmin, PAID_USE_MESSAGES.askAdmin);
+  // Someone who agreed and has no plan to choose has nothing to ask for.
+  assert.equal(page(onTrial({ canAccept: false, plans: [], accepted: AGREED_PER_USE })).plans.askAdmin, null);
+});
+
+test("on a trial of an agent that is no longer sold for use, the line only counts and nothing is offered", () => {
+  const { view, plans, trial } = page(onTrial({ terms: null }, GONE));
+  assert.equal(view.sentence, "You have used all 20 uses of your free trial.");
+  assert.deepEqual(plans, { cards: [], place: "none", canStart: false, askAdmin: null, payAsYouGo: null, countLine: null });
+  assert.deepEqual(view.action, { kind: "none", label: null });
+  assert.equal(trial.held, true);
+});
+
+test("under an answer on a trial: included in the free trial, or what was charged past it", () => {
+  const count = { id: "t1", includedUses: 20, carriedUses: 0, usedUses: 9, remainingUses: 11, extraUsePriceCents: null, warning: null };
+  assert.equal(PAID_USE_MESSAGES.includedInTrial, "Included in your free trial.");
+  assert.equal(chargeLine(billed({ ...count, use: "included", trial: true }), "message"), "Included in your free trial.");
+  // Past the trial's uses, for someone who agreed to the price per use.
+  assert.equal(
+    chargeLine(billed({ ...count, use: "extra", trial: true, usedUses: 20, remainingUses: 0, warning: 100 }, 5), "message"),
+    "Charged $0.05.",
+  );
+  // A paid plan, and an API that does not say, read as before.
+  assert.equal(chargeLine(billed({ ...count, use: "included", trial: false }), "message"), "Included in your plan.");
+  assert.equal(chargeLine(billed({ ...count, use: "included" }), "message"), "Included in your plan.");
+});
+
+test("after an answer on a trial the count is drawn again as a trial's, and a plan started over it is told as a plan", () => {
+  const before = onTrial();
+  const after = accessAfterUse(before, billed({ id: "t1", use: "included", trial: true, includedUses: 20, carriedUses: 0, usedUses: 9, remainingUses: 11, extraUsePriceCents: null, warning: null }));
+  assert.equal(after?.plan?.trial, true);
+  assert.equal(page(after).view.sentence, "11 of 20 trial uses left. Your free trial ends on 20 Oct.");
+  // The last free use, then a charged one: the page stays a trial's.
+  const paying = onTrial({ accepted: AGREED_PER_USE });
+  const charged = accessAfterUse(paying, billed({ id: "t1", use: "extra", trial: true, includedUses: 20, carriedUses: 0, usedUses: 20, remainingUses: 0, extraUsePriceCents: null, warning: 100 }, 5));
+  assert.equal(page(charged).view.sentence, "You have used all 20 uses of your free trial. Each message is now $0.05 from your credits.");
+  // An answer that does not say leaves what the page held; one that says it is a paid plan is believed.
+  const silent = accessAfterUse(before, billed({ id: "t1", use: "included", includedUses: 20, carriedUses: 0, usedUses: 9, remainingUses: 11, extraUsePriceCents: null, warning: null }));
+  assert.equal(silent?.plan?.trial, true);
+  const paid = accessAfterUse(before, billed({ id: "p1", use: "included", trial: false, includedUses: 500, carriedUses: 0, usedUses: 1, remainingUses: 499, extraUsePriceCents: 4, resetsAt: NOV_12, warning: null }));
+  assert.equal(paid?.plan?.trial, false);
+  // A paid plan's answer on a page that held a paid plan gains no word about a trial.
+  const plain = accessAfterUse(onStarter(), billed({ id: "p1", use: "included", includedUses: 500, carriedUses: 0, usedUses: 189, remainingUses: 311, extraUsePriceCents: 4, resetsAt: NOV_12, warning: null }));
+  assert.equal("trial" in plain!.plan!, false);
+});
+
+test("a used-up trial refused: the API's sentence, the cards stay, and the page still reads as a trial", () => {
+  const refused = refusal("plan_used_up", { message: API_TRIAL_USED_UP, plans: OFFERED });
+  const notice = paidRefusalNotice({ status: 429, refusal: refused, act: "chat", unit: "message" });
+  assert.equal(notice.message, API_TRIAL_USED_UP);
+  assert.equal(notice.retryAfterSeconds, null, "a trial names no time to wait for");
+  assert.equal(notice.action.label, null);
+  // The page held a count with a use left (a teammate took it): it moves to none left, still a trial.
+  const after = accessAfterRefusal(onTrial(), refused);
+  assert.equal(after?.plan?.trial, true);
+  assert.equal(after?.plan?.remainingUses, 0);
+  assert.equal("resetsAt" in after!.plan!, false);
+  const drawn = page(after);
+  assert.equal(drawn.view.sentence, "You have used all 20 uses of your free trial. Choose a plan or pay per use to keep using it.");
+  assert.deepEqual(drawn.plans.cards, OFFERED);
+  assert.equal(drawn.plans.place, "first");
+  assert.equal(drawn.moveUp, null);
+});
+
+test("a trial that ended: the 402 says so, and the page goes back to choosing in the trial's words", () => {
+  const refused = refusal("plan_ended", { message: API_TRIAL_ENDED, terms: PER_USE, plans: OFFERED });
+  const notice = paidRefusalNotice({ status: 402, refusal: refused, act: "chat", unit: "message" });
+  assert.equal(notice.message, API_TRIAL_ENDED);
+  const after = accessAfterRefusal(onTrial(), refused);
+  assert.equal(after?.access, "plan_ended");
+  assert.equal(after?.plan, null);
+  assert.equal(after?.trialEnded, true);
+  const drawn = page(after);
+  assert.equal(drawn.view.kind, "plan_ended");
+  assert.equal(drawn.view.sentence, "Your free trial ended. Choose a plan or pay per use to keep using it.");
+  assert.equal(drawn.plans.place, "first");
+  assert.deepEqual(drawn.view.action, { kind: "start", label: "Start using" });
+  assert.deepEqual(drawn.trial, NO_TRIAL);
+  // As the access itself says it on the next read, and for a member who may not choose.
+  const read = state("plan_ended", { plans: OFFERED, trial: TRIAL, trialAvailable: false, trialEnded: true, accepted: AGREED_NOTHING });
+  assert.equal(page(read).view.sentence, PAID_USE_MESSAGES.trialEnded);
+  assert.equal(
+    page({ ...read, canAccept: false }).view.sentence,
+    `Your free trial ended. Choose a plan or pay per use to keep using it. ${PAID_USE_MESSAGES.askAdmin}`,
+  );
+  // A paid plan that ended keeps its own words, on the refusal and on the read.
+  assert.equal(accessAfterRefusal(onStarter(), refusal("plan_ended", { terms: PER_USE }))?.trialEnded, undefined);
+  assert.equal(page(state("plan_ended", { trialEnded: false })).view.sentence, PAID_USE_MESSAGES.planEnded);
+  assert.equal(page(state("plan_ended")).view.sentence, PAID_USE_MESSAGES.planEnded);
+});
+
+test("a refused start of the trial says the API's sentence, with Add credits where that is what is missing", () => {
+  const used = planStartNotice({ status: 409, refusal: refusal("trial_already_used", { message: API_ALREADY_USED }), unit: "message" });
+  assert.equal(used.message, API_ALREADY_USED);
+  assert.deepEqual(used.action, { kind: "none", label: null });
+  const credits = planStartNotice({ status: 409, refusal: refusal("trial_needs_credits", { message: API_NEEDS_CREDITS }), unit: "message" });
+  assert.equal(credits.message, API_NEEDS_CREDITS);
+  assert.deepEqual(credits.action, { kind: "add_credits", label: "Add credits" });
+  // With no sentence from the API, the same words.
+  assert.equal(planStartNotice({ status: 409, refusal: refusal("trial_already_used"), unit: "message" }).message, API_ALREADY_USED);
+  assert.equal(planStartNotice({ status: 409, refusal: refusal("trial_needs_credits"), unit: "message" }).message, API_NEEDS_CREDITS);
+  assert.equal(planMoveNotice({ status: 409, refusal: refusal("trial_cannot_move"), unit: "message" }).message, API_CANNOT_MOVE);
+  assert.equal(PAID_REFUSAL_RULES.trial_already_used!.fallback, API_ALREADY_USED);
+  assert.equal(PAID_REFUSAL_RULES.trial_needs_credits!.fallback, API_NEEDS_CREDITS);
+  assert.equal(PAID_REFUSAL_RULES.trial_cannot_move!.fallback, API_CANNOT_MOVE);
+
+  // The page is true before it is read again: the trial is no longer one that can be started.
+  const before = offered();
+  assert.deepEqual(gate(accessAfterRefusal(before, refusal("trial_already_used"))).trial, NO_TRIAL);
+  assert.equal(gate(accessAfterRefusal(before, refusal("trial_needs_credits"))).trial.offer?.kind, "needs_credits");
+  // A trial that changed since it was shown: drawn again as it is offered now, or not at all.
+  const fewer = { id: "t1", includedUses: 10, days: 7 };
+  const changed = accessAfterRefusal(before, refusal("pricing_changed", { message: "The free trial changed.", trial: fewer, plans: OFFERED }));
+  assert.deepEqual(gate(changed).trial.offer?.trial, fewer);
+  assert.equal(gate(changed).trial.offer?.line, "Try 10 uses free for 7 days. Nothing is charged and it does not renew.");
+  assert.deepEqual(gate(accessAfterRefusal(before, refusal("pricing_changed", { trial: null }))).trial, NO_TRIAL);
+  assert.equal(planStartNotice({ status: 409, refusal: refusal("pricing_changed", { message: "The free trial changed." }), unit: "message" }).message, "The free trial changed.");
+  // A refused plan start names no trial and leaves it as it was.
+  assert.deepEqual(accessAfterRefusal(before, refusal("pricing_changed", { plans: [STARTER] }))?.trial, TRIAL);
+});
+
+test("every page with no trial is what it was: the trial part is empty and the rest is untouched", () => {
+  const cases: PaidUseAccessState[] = [
+    state("none"),
+    state("none", { canAccept: false }),
+    state("plan_ended"),
+    state("pricing_changed", { accepted: { pricingModel: "per_request", pricePerRequestCents: 3, monthlyPriceCents: null } }),
+    state("listing_pricing", { accepted: { pricingModel: "per_request", pricePerRequestCents: 5, monthlyPriceCents: null } }),
+    onStarter(),
+    onStarter({}, { usedUses: 500, remainingUses: 0, warning: 100, extraUsePriceCents: null }),
+    state("own_agent"),
+    state("not_offered", { terms: null }),
+  ];
+  for (const access of cases) {
+    // What the API says of a listing with no trial, and an API that says nothing of one.
+    const told = page({ ...access, trial: null, trialAvailable: false, trialNeedsCredits: false, trialEnded: false });
+    const silent = page(access);
+    assert.deepEqual(told, silent, access.access);
+    assert.deepEqual(silent.trial, NO_TRIAL, access.access);
+    // A paid plan the API marks as not a trial is a paid plan.
+    if (access.plan) assert.deepEqual(page({ ...access, plan: { ...access.plan, trial: false } }), silent);
+  }
+  assert.deepEqual(page(null).trial, NO_TRIAL);
+});
+
+test("no sentence of a free trial has an em dash, a raw code, or a word about what the buyer is never told", () => {
+  const gone = planCountOf(onTrialPlan(GONE))!;
+  const price = { model: "per_request" as const, cents: 5, unit: "message" as const };
+  const said = [
+    ...Object.values(TRIAL_WORDS),
+    PAID_USE_MESSAGES.includedInTrial,
+    PAID_USE_MESSAGES.trialEnded,
+    PAID_REFUSAL_RULES.trial_already_used!.fallback,
+    PAID_REFUSAL_RULES.trial_needs_credits!.fallback,
+    PAID_REFUSAL_RULES.trial_cannot_move!.fallback,
+    trialOfferLine(TRIAL),
+    ...Object.values(trialStartDialog(TRIAL)),
+    trialAfterLine(price),
+    trialCountLine({ plan: planCountOf(onTrialPlan())!, endsAt: OCT_20, dates: UTC }),
+    trialCountLine({ plan: gone, perUse: null }),
+    trialCountLine({ plan: gone, perUse: price }),
+    trialCountLine({ plan: gone }),
+    ...Object.values(page(onTrial()).view.dialog!),
+  ];
+  for (const sentence of said) {
+    assert.equal(/[\u2013\u2014]/.test(sentence), false, sentence);
+    assert.doesNotMatch(sentence, /trial_already_used|trial_needs_credits|trial_cannot_move|plan_used_up|plan_ended|pricing_changed/, sentence);
+    assert.doesNotMatch(sentence, /token|model|organization|unlimited|subscriber/i, sentence);
     assert.doesNotMatch(sentence, /undefined|null|NaN/, sentence);
   }
 });

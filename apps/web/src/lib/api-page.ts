@@ -13,11 +13,11 @@
  * Never said here: how many people use the agent, what it runs on, anything
  * of the organization that sells it, or a count that has no end.
  */
-import type { AgentApiEndpoint, AgentApiPage, MarketplaceListing, PlanOffer, PublicAgentDetail } from "./api";
+import type { AgentApiEndpoint, AgentApiPage, MarketplaceListing, PlanOffer, PublicAgentDetail, TrialOffer } from "./api";
 import { SPEND_SCOPES } from "./jobs";
 import { PAID_USE_MESSAGES, agentPagePath, priceLine, type PaidPrice } from "./paid-use";
 import { API_KEY_ENV, paidAgentChatSnippets, paidAgentRunSnippets, type PaidAgentSnippets } from "./public-urls";
-import { payAsYouGoLine, planAfterLine, planPriceLine, planUsesLine, plansOf } from "./use-plans";
+import { payAsYouGoLine, planAfterLine, planPriceLine, planUsesLine, plansOf, trialOfferOf, trialSizeWords } from "./use-plans";
 
 // ============================================
 // Words
@@ -232,6 +232,8 @@ export interface ApiPageView {
   plans: ApiPagePlan[];
   /** "Or pay as you go: $0.05 a message", after the plans. Null with no plans. */
   payAsYouGo: string | null;
+  /** "Try 20 uses free for 7 days, started on the agent's page." Null when the listing offers no free trial. */
+  trialLine: string | null;
   /** The limits for one buyer, a sentence each. */
   limits: string[];
   headers: { always: ApiPageHeader[]; onPlan: ApiPageHeader[] };
@@ -301,6 +303,11 @@ export function limitLines(limits: Partial<AgentApiPage["limits"]> | null | unde
   return lines;
 }
 
+/** "Try 20 uses free for 7 days, started on the agent's page." One line under the plans. */
+export function apiTrialLine(trial: TrialOffer): string {
+  return `Try ${trialSizeWords(trial)}, started on the agent's page.`;
+}
+
 function planRow(plan: PlanOffer): ApiPagePlan {
   return {
     id: plan.id,
@@ -354,6 +361,8 @@ export function apiPageView(page: AgentApiPage, apiBase: string): ApiPageView | 
     : { model: "per_request", cents: page.priceCents, unit: page.unit === "run" ? "run" : "message" };
   // A listing sold by the month offers no plan, whatever came with it.
   const plans = monthly ? [] : plansOf(page.plans);
+  // Nor a free trial, which is some uses of an agent sold per use.
+  const trial = monthly ? null : trialOfferOf(page.trial);
 
   return {
     title: apiPageTitle(name),
@@ -376,6 +385,7 @@ export function apiPageView(page: AgentApiPage, apiBase: string): ApiPageView | 
     priceNote: monthly ? API_PAGE_WORDS.monthlyNote : API_PAGE_WORDS.perUseNote,
     plans: plans.map(planRow),
     payAsYouGo: plans.length > 0 ? payAsYouGoLine(price) : null,
+    trialLine: trial ? apiTrialLine(trial) : null,
     limits: limitLines(page.limits, plans.length > 0),
     headers: { always: headersOf(page.usageHeaders?.always), onPlan: monthly ? [] : headersOf(page.usageHeaders?.onPlan) },
     refusals: refusalsOf(page.refusals),

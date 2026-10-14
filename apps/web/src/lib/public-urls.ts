@@ -214,8 +214,14 @@ print(reply.choices[0].message.content)`;
 export interface PaidAgentRunSnippetInput {
   /** The base address of the API, as the API page's data gave it or as this app reaches it. */
   baseUrl: string;
-  /** The run address under the base, as the API page's data gave it: `/api/a/<handle>/run`. */
+  /** The run address under the base, as the API page's data gave it: `/api/a/<handle>/run` or `/api/w/<slug>/run`. */
   path: string;
+  /**
+   * What is run: an agent unless it says. A workflow on sale is run at its own address
+   * (`/api/w/<slug>/run`), whose body is the input and nothing else: it always answers one JSON
+   * body and refuses any other field, `stream` included. Its comment speaks of the workflow's form.
+   */
+  subject?: "agent" | "workflow";
 }
 
 /**
@@ -229,6 +235,7 @@ export interface PaidAgentRunSnippetInput {
  */
 export function paidAgentRunSnippets(input: PaidAgentRunSnippetInput): PaidAgentSnippets {
   const endpointUrl = resolveAgainst(input.baseUrl, input.path);
+  if (input.subject === "workflow") return paidWorkflowRunSnippets(endpointUrl);
 
   const curl = `curl -i ${endpointUrl} \\
   -H "Authorization: Bearer $${API_KEY_ENV}" \\
@@ -264,6 +271,50 @@ request = urllib.request.Request(
     },
     # One answer for each question of the agent's form, by the question's name.
     data=json.dumps({"input": {"field_name": "Your answer"}, "stream": False}).encode(),
+)
+
+with urllib.request.urlopen(request) as response:
+    result = json.load(response)
+print(result["output"])`;
+
+  return { endpointUrl, curl, javascript, python };
+}
+
+/** The same for a workflow on sale: the body is `input` alone, and the answer is always one JSON body. */
+function paidWorkflowRunSnippets(endpointUrl: string): PaidAgentSnippets {
+  const curl = `curl -i ${endpointUrl} \\
+  -H "Authorization: Bearer $${API_KEY_ENV}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "input": {"field_name": "Your answer"}
+  }'`;
+
+  const javascript = `const response = await fetch("${endpointUrl}", {
+  method: "POST",
+  headers: {
+    Authorization: "Bearer " + process.env.${API_KEY_ENV},
+    "Content-Type": "application/json",
+  },
+  // One answer for each question of the workflow's form, by the question's name.
+  body: JSON.stringify({ input: { field_name: "Your answer" } }),
+});
+
+const result = await response.json();
+console.log(result.output);`;
+
+  const python = `import json
+import os
+import urllib.request
+
+request = urllib.request.Request(
+    "${endpointUrl}",
+    method="POST",
+    headers={
+        "Authorization": "Bearer " + os.environ["${API_KEY_ENV}"],
+        "Content-Type": "application/json",
+    },
+    # One answer for each question of the workflow's form, by the question's name.
+    data=json.dumps({"input": {"field_name": "Your answer"}}).encode(),
 )
 
 with urllib.request.urlopen(request) as response:

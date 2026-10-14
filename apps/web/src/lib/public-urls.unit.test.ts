@@ -327,3 +327,35 @@ test("the API page's snippets are plain text a terminal takes", () => {
     assert.ok(!/[ \t]+\n/.test(text), "no space at a line's end, which breaks a curl continuation");
   }
 });
+
+// ============================================
+// A workflow on sale: its run address
+// ============================================
+
+const paidWorkflowRun = () =>
+  paidAgentRunSnippets({ baseUrl: "https://api.example.com", path: "/api/w/pdf-summary/run", subject: "workflow" });
+
+test("a workflow's snippets post the input alone to its run address, which always answers one JSON body", () => {
+  const s = paidWorkflowRun();
+  assert.equal(s.endpointUrl, "https://api.example.com/api/w/pdf-summary/run");
+  // The run address of a workflow takes the input and nothing else: `stream` would be refused.
+  assert.deepEqual(Object.keys(curlBody(s.curl)), ["input"]);
+  for (const text of all(s)) {
+    assert.ok(text.includes("https://api.example.com/api/w/pdf-summary/run"), text);
+    assert.ok(!/stream/i.test(text), text);
+    assert.ok(!text.includes("agent"), text);
+    assert.ok(!text.includes("workflow/"), text);
+    assert.ok(/^[\x20-\x7e\n]*$/.test(text), text);
+    assert.ok(!/[ \t]+\n/.test(text), "no space at a line's end");
+  }
+  assert.ok(s.javascript.includes("// One answer for each question of the workflow's form, by the question's name."));
+  assert.ok(s.python.includes("# One answer for each question of the workflow's form, by the question's name."));
+  assert.ok(s.curl.includes('-H "Authorization: Bearer $WHEELSAI_API_KEY"'));
+  assert.ok(s.javascript.includes("await response.json()"));
+  assert.ok(s.python.includes("json.load(response)"));
+  // An agent's run is what it was, with the option or without it.
+  assert.deepEqual(
+    paidAgentRunSnippets({ baseUrl: "https://api.example.com", path: "/api/a/form-filler/run", subject: "agent" }),
+    paidRun(),
+  );
+});

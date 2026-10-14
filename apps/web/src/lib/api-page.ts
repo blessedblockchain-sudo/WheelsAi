@@ -1,6 +1,7 @@
 /**
- * The API page of a listing, `/a/<handle>/api`: what someone who calls a paid
- * agent from code reads before they write a line. Where to send a request,
+ * The API page of a listing, `/a/<handle>/api` for an agent and
+ * `/w/<slug>/api` for a workflow on sale: what someone who calls it from
+ * code reads before they write a line. Where to send a request,
  * the model id, three snippets, what a use costs, the plans, the limits for
  * one buyer, the usage headers of an answer and the refusals a caller can
  * meet.
@@ -11,11 +12,28 @@
  * API's own sentence.
  *
  * Never said here: how many people use the agent, what it runs on, anything
- * of the organization that sells it, or a count that has no end.
+ * of the organization that sells it, or a count that has no end. Of a
+ * workflow: its own name or slug, a step, an agent or a model inside it.
  */
-import type { AgentApiEndpoint, AgentApiPage, MarketplaceListing, PlanOffer, PublicAgentDetail, TrialOffer } from "./api";
+import type {
+  AgentApiEndpoint,
+  AgentApiPage,
+  MarketplaceListing,
+  PlanOffer,
+  PublicAgentDetail,
+  TrialOffer,
+  WorkflowApiPage,
+} from "./api";
 import { SPEND_SCOPES } from "./jobs";
-import { PAID_USE_MESSAGES, agentPagePath, priceLine, type PaidPrice } from "./paid-use";
+import {
+  PAID_USE_MESSAGES,
+  PAID_WORKFLOW_MESSAGES,
+  agentPagePath,
+  priceLine,
+  runTimeLimit,
+  workflowPagePath,
+  type PaidPrice,
+} from "./paid-use";
 import { API_KEY_ENV, paidAgentChatSnippets, paidAgentRunSnippets, type PaidAgentSnippets } from "./public-urls";
 import { payAsYouGoLine, planAfterLine, planPriceLine, planUsesLine, plansOf, trialOfferOf, trialSizeWords } from "./use-plans";
 
@@ -61,6 +79,27 @@ export const API_PAGE_WORDS = {
   loadFailed: "Couldn't load this page",
 } as const;
 
+/**
+ * The words of a workflow's API page that differ from an agent's. The rest
+ * (the key, the headers, the headings) are the same words on both.
+ */
+export const WORKFLOW_API_PAGE_WORDS = {
+  /** Said of a workflow: it runs from a form, at its run address or by a chat completion. */
+  runNote:
+    "This workflow runs from a form. Send the answers to its form to its run address, or call it by a chat completion with its model id.",
+  form: "Send one answer for each question of its form, by the question's name. The questions are on the workflow's page.",
+  startFirst: "Start using the workflow on its page before your first call.",
+  startPlan: "A plan is started on the workflow's page.",
+  /** The link back to the workflow's own page. */
+  workflowPage: "The workflow's page",
+  otherAddresses: "Other addresses of this workflow",
+  notFoundTitle: PAID_WORKFLOW_MESSAGES.notFoundTitle,
+  notFound: PAID_WORKFLOW_MESSAGES.notFoundPage,
+} as const;
+
+/** Which API page is read: an agent's by its handle, or a workflow's by its listing's slug. */
+export type ApiPageReader = "agent" | "workflow";
+
 /** The headings of the page's parts, in the order they are drawn. */
 export const API_PAGE_HEADINGS = {
   call: "Call it",
@@ -89,6 +128,11 @@ export function apiPageSummary(name: string): string {
 /** The API page of the agent at this handle. */
 export function apiPagePath(handle: string): string {
   return `${agentPagePath(handle)}/api`;
+}
+
+/** The API page of the workflow on sale at this listing slug. */
+export function workflowApiPagePath(slug: string): string {
+  return `${workflowPagePath(slug)}/api`;
 }
 
 /** The dashboard's keys page. */
@@ -123,12 +167,20 @@ export function apiPageHrefOfAgent(detail: Pick<PublicAgentDetail, "agent" | "us
 
 /**
  * The same from a marketplace listing: one that sells use, per use or by the
- * month, of an agent that has a public page and is called.
+ * month, of an agent that has a public page and is called; or one of a
+ * workflow, which is sold per run only and is called at its listing's slug.
  */
 export function apiPageHrefOfListing(
-  listing: Pick<MarketplaceListing, "sells" | "pricingModel" | "agent"> | null | undefined,
+  listing:
+    | (Pick<MarketplaceListing, "sells" | "pricingModel" | "agent" | "productKind"> & Partial<Pick<MarketplaceListing, "slug">>)
+    | null
+    | undefined,
 ): string | null {
   if (!listing || listing.sells !== "use") return null;
+  if (listing.productKind === "workflow") {
+    if (listing.pricingModel !== "per_request") return null;
+    return isText(listing.slug) ? workflowApiPagePath(listing.slug) : null;
+  }
   if (listing.pricingModel !== "per_request" && listing.pricingModel !== "monthly") return null;
   const agent = listing.agent;
   // A row that does not say the agent is public is not linked: the page may not exist.
@@ -152,12 +204,28 @@ const isText = (value: unknown): value is string => typeof value === "string" &&
  * treated as a failed read, never drawn in part.
  */
 export function isAgentApiPage(body: unknown): body is AgentApiPage {
+  if (isRecord(body) && body.kind === "workflow") return false;
   if (!isRecord(body)) return false;
   if (!isText(body.handle) || !isText(body.name) || !isCalled(body.agentKind)) return false;
   if (!Array.isArray(body.endpoints) || !Array.isArray(body.plans) || !Array.isArray(body.refusals)) return false;
   if (typeof body.priceCents !== "number" || !isText(body.unit) || !isText(body.pricingModel)) return false;
   if (!isRecord(body.limits) || !isRecord(body.usageHeaders)) return false;
   return Array.isArray(body.usageHeaders.always) && Array.isArray(body.usageHeaders.onPlan);
+}
+
+/** Whether a body read from the API is a workflow's API page. Anything else is a failed read, never drawn in part. */
+export function isWorkflowApiPage(body: unknown): body is WorkflowApiPage {
+  if (!isRecord(body) || body.kind !== "workflow") return false;
+  if (!isText(body.name) || !isText(body.listingSlug) || !isText(body.model)) return false;
+  if (!Array.isArray(body.endpoints) || !Array.isArray(body.plans) || !Array.isArray(body.refusals)) return false;
+  if (typeof body.priceCents !== "number" || body.unit !== "run" || body.pricingModel !== "per_request") return false;
+  if (!isRecord(body.limits) || !isRecord(body.usageHeaders)) return false;
+  return Array.isArray(body.usageHeaders.always) && Array.isArray(body.usageHeaders.onPlan);
+}
+
+/** Whether a body is the API page the reader asked for. */
+export function isApiPageFor(reader: ApiPageReader, body: unknown): body is AgentApiPage | WorkflowApiPage {
+  return reader === "workflow" ? isWorkflowApiPage(body) : isAgentApiPage(body);
 }
 
 // ============================================
@@ -210,8 +278,14 @@ export interface ApiPageView {
   /** "Translator API" */
   title: string;
   intro: string;
-  /** The agent's own page. */
+  /** The page of what is sold: the agent's own page, or the workflow's. */
   agentHref: string;
+  /** What the link to that page says: "The agent's page", "The workflow's page". */
+  pageLabel: string;
+  /** "A plan is started on the agent's page." */
+  startPlan: string;
+  /** The heading over the other addresses. */
+  otherAddresses: string;
   /** `chat`: called by a chat completion. `task`: run from its form's answers at its own address. */
   kind: "chat" | "task";
   /** The base address requests are sent to. */
@@ -286,6 +360,25 @@ function refusalsOf(raw: unknown): ApiPageRefusal[] {
 const isLimit = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value > 0;
 
 /**
+ * What only a workflow's page says of its limits, after a buyer's own: how
+ * many paid runs of it go at once, and how long one may take. The numbers are
+ * the API's; one it did not send is not said.
+ */
+export function workflowLimitLines(limits: Partial<WorkflowApiPage["limits"]> | null | undefined, maxRunMinutes: unknown): string[] {
+  const lines: string[] = [];
+  if (isLimit(limits?.maxActiveRuns)) {
+    lines.push(
+      limits.maxActiveRuns === 1
+        ? "One run of this workflow goes at a time, shared by everyone who uses it."
+        : `Up to ${limits.maxActiveRuns} runs of this workflow go at once, shared by everyone who uses it.`,
+    );
+  }
+  const runTime = runTimeLimit(maxRunMinutes);
+  if (runTime) lines.push(runTime);
+  return lines;
+}
+
+/**
  * The limits for one buyer, a sentence each. A plan's holder is held to the
  * plan's count in place of the day's limit, which is said only of a listing
  * that offers plans. A limit the API did not send is not said.
@@ -334,7 +427,8 @@ function snippetRows(snippets: PaidAgentSnippets): ApiPageSnippet[] {
  * id, a task with no run address): the page is then shown as not found, and
  * never with a snippet that calls something the API did not say.
  */
-export function apiPageView(page: AgentApiPage, apiBase: string): ApiPageView | null {
+export function apiPageView(page: AgentApiPage | WorkflowApiPage, apiBase: string): ApiPageView | null {
+  if (isWorkflowPage(page)) return workflowApiPageView(page, apiBase);
   const address = (isText(page.baseUrl) ? page.baseUrl : apiBase).trim().replace(/\/+$/, "");
   const endpoints = Array.isArray(page.endpoints) ? page.endpoints.filter((endpoint) => isRecord(endpoint) && isText(endpoint.path)) : [];
   const at = (endpoint: AgentApiEndpoint) => `${address}${endpoint.path.startsWith("/") ? "" : "/"}${endpoint.path}`;
@@ -371,6 +465,9 @@ export function apiPageView(page: AgentApiPage, apiBase: string): ApiPageView | 
         ? `Call ${name} from your own code. It answers through OpenAI's chat completions, so an OpenAI client works with it as it is.`
         : `Call ${name} from your own code. Send the answers to its form and get the result back.`,
     agentHref: agentPagePath(page.handle),
+    pageLabel: API_PAGE_WORDS.agentPage,
+    startPlan: API_PAGE_WORDS.startPlan,
+    otherAddresses: API_PAGE_WORDS.otherAddresses,
     kind,
     address,
     modelLine: kind === "chat" ? `model: ${page.model}` : null,
@@ -392,6 +489,65 @@ export function apiPageView(page: AgentApiPage, apiBase: string): ApiPageView | 
     oneKey: API_PAGE_WORDS.oneKey,
     keyScope: API_PAGE_WORDS.keyScope,
     startFirst: API_PAGE_WORDS.startFirst,
+    createKeyLabel: API_PAGE_WORDS.createKey,
+  };
+}
+
+function isWorkflowPage(page: AgentApiPage | WorkflowApiPage): page is WorkflowApiPage {
+  return (page as { kind?: unknown }).kind === "workflow";
+}
+
+/**
+ * The API page of a workflow on sale, from `GET /api/w/:slug/api` alone. It
+ * is run from its form at its run address (the snippets), and is also called
+ * by OpenAI's chat completions with model `w/<listing slug>`, which is the
+ * model line and the first of the other addresses. Sold per run only: the
+ * price per run, the plans, never a free trial or a month.
+ *
+ * Null when the answer names no run address or no model id: the page is then
+ * shown as not found.
+ */
+function workflowApiPageView(page: WorkflowApiPage, apiBase: string): ApiPageView | null {
+  const address = (isText(page.baseUrl) ? page.baseUrl : apiBase).trim().replace(/\/+$/, "");
+  const endpoints = Array.isArray(page.endpoints) ? page.endpoints.filter((endpoint) => isRecord(endpoint) && isText(endpoint.path)) : [];
+  const at = (endpoint: AgentApiEndpoint) => `${address}${endpoint.path.startsWith("/") ? "" : "/"}${endpoint.path}`;
+  const called = endpoints.find((endpoint) => endpoint.use === "run");
+  if (!called || !isText(page.model)) return null;
+  const snippets = paidAgentRunSnippets({ baseUrl: address, path: called.path, subject: "workflow" });
+
+  const name = page.name.trim();
+  const price: PaidPrice = { model: "per_request", cents: page.priceCents, unit: "run" };
+  const plans = plansOf(page.plans);
+
+  return {
+    title: apiPageTitle(name),
+    intro: `Call ${name} from your own code. Send the answers to its form and get the result back.`,
+    agentHref: workflowPagePath(page.listingSlug),
+    pageLabel: WORKFLOW_API_PAGE_WORDS.workflowPage,
+    startPlan: WORKFLOW_API_PAGE_WORDS.startPlan,
+    otherAddresses: WORKFLOW_API_PAGE_WORDS.otherAddresses,
+    kind: "task",
+    address,
+    modelLine: `model: ${page.model.trim()}`,
+    callLine: `${called.method} ${snippets.endpointUrl}`,
+    callNotes: [WORKFLOW_API_PAGE_WORDS.runNote, WORKFLOW_API_PAGE_WORDS.form],
+    snippets: snippetRows(snippets),
+    keyNote: API_PAGE_WORDS.keyNote,
+    otherEndpoints: endpoints
+      .filter((endpoint) => endpoint !== called && endpoint.use in ENDPOINT_SENTENCES)
+      .map((endpoint) => ({ id: endpoint.use, line: `${endpoint.method} ${at(endpoint)}`, says: ENDPOINT_SENTENCES[endpoint.use] })),
+    priceLine: plans.length > 0 ? null : priceLine(price),
+    priceNote: API_PAGE_WORDS.perUseNote,
+    plans: plans.map(planRow),
+    payAsYouGo: plans.length > 0 ? payAsYouGoLine(price) : null,
+    // A workflow's listing offers no free trial.
+    trialLine: null,
+    limits: [...limitLines(page.limits, plans.length > 0), ...workflowLimitLines(page.limits, page.maxRunMinutes)],
+    headers: { always: headersOf(page.usageHeaders?.always), onPlan: headersOf(page.usageHeaders?.onPlan) },
+    refusals: refusalsOf(page.refusals),
+    oneKey: API_PAGE_WORDS.oneKey,
+    keyScope: API_PAGE_WORDS.keyScope,
+    startFirst: WORKFLOW_API_PAGE_WORDS.startFirst,
     createKeyLabel: API_PAGE_WORDS.createKey,
   };
 }

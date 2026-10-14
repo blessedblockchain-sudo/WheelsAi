@@ -39,6 +39,7 @@ import {
   type PaidDialog,
   type PaidNotice,
   type PaidPrice,
+  type PaidSubject,
   type PaidUnit,
   type PaidView,
   type PaidViewInput,
@@ -913,6 +914,8 @@ export interface PlanStartRefusalInput {
   status: number;
   refusal: PaidUseRefusal | null;
   unit: PaidUnit;
+  /** What the page sells, for the sentences that name it; an agent unless it says. */
+  subject?: PaidSubject;
 }
 
 /**

@@ -5,10 +5,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { AgentApiPage, MarketplaceListing, PublicAgentDetail } from "./api";
+import type { AgentApiPage, MarketplaceListing, PublicAgentDetail, WorkflowApiPage } from "./api";
 import {
   API_PAGE_HEADINGS,
   API_PAGE_WORDS,
+  WORKFLOW_API_PAGE_WORDS,
   apiPageHrefOfAgent,
   apiPageHrefOfListing,
   apiPagePath,
@@ -18,7 +19,11 @@ import {
   apiTrialLine,
   createKeyHref,
   isAgentApiPage,
+  isApiPageFor,
+  isWorkflowApiPage,
   limitLines,
+  workflowApiPagePath,
+  workflowLimitLines,
 } from "./api-page";
 import { SPEND_SCOPES } from "./jobs";
 import { PAID_USE_MESSAGES } from "./paid-use";
@@ -441,4 +446,170 @@ test("no line about a trial when the listing offers none, cannot be read, or is 
   const { trialLine: _with, ...withTrial } = apiPageView(chatPage({ trial: TRIAL }), "https://x.test")!;
   const { trialLine: _without, ...without } = apiPageView(chatPage(), "https://x.test")!;
   assert.deepEqual(withTrial, without);
+});
+
+// ============================================
+// A workflow on sale
+// ============================================
+
+test("the listing's page links a workflow's listing to its own API page, by the listing's slug", () => {
+  const workflow = (over: Record<string, unknown> = {}) =>
+    ({ productKind: "workflow", sells: "use", pricingModel: "per_request", slug: "pdf-summary", ...over }) as unknown as Listing;
+  assert.equal(apiPageHrefOfListing(workflow()), "/w/pdf-summary/api");
+  assert.equal(workflowApiPagePath("a b"), "/w/a%20b/api");
+  // A workflow is sold per run only: any other pricing has no API page.
+  for (const pricingModel of ["monthly", "free", "tokenized"]) {
+    assert.equal(apiPageHrefOfListing(workflow({ pricingModel })), null, pricingModel);
+  }
+  assert.equal(apiPageHrefOfListing(workflow({ sells: "copies" })), null);
+  // With no slug there is no address to link.
+  assert.equal(apiPageHrefOfListing(workflow({ slug: "" })), null);
+  assert.equal(apiPageHrefOfListing(workflow({ slug: undefined })), null);
+  // An agent's listing that says so is linked as it always was.
+  assert.equal(apiPageHrefOfListing(listing({ productKind: "agent", slug: "something-else" })), "/a/translator/api");
+});
+
+/** A workflow sold per run with one plan, as GET /api/w/:slug/api answers. */
+function workflowPage(over: Partial<WorkflowApiPage> = {}): WorkflowApiPage {
+  return {
+    kind: "workflow",
+    name: "PDF summary",
+    listingId: "l7",
+    listingSlug: "pdf-summary",
+    baseUrl: "https://api.example.com",
+    model: "w/pdf-summary",
+    endpoints: [
+      { use: "run", method: "POST", path: "/api/w/pdf-summary/run" },
+      { use: "openai", method: "POST", path: "/v1/chat/completions" },
+      { use: "access", method: "GET", path: "/api/w/pdf-summary/access" },
+    ],
+    pricingModel: "per_request",
+    unit: "run",
+    priceCents: 5,
+    plans: [STARTER],
+    trial: null,
+    limits: { perMinute: 10, perDayWithoutPlan: 200, maxActiveRuns: 3 },
+    maxRunMinutes: 10,
+    input: { maxInputBytes: 65_536, maxPromptChars: 20_000 },
+    usageHeaders: { always: ALWAYS, onPlan: ON_PLAN },
+    refusals: [
+      {
+        code: "workflow_busy",
+        status: 429,
+        message: "This workflow is running as many times as it can right now: 3 runs at once, shared by everyone who uses it.",
+        openai: { code: "rate_limit_exceeded", status: 429 },
+      },
+    ],
+    ...over,
+  };
+}
+
+function workflowView(page: WorkflowApiPage = workflowPage()) {
+  const built = apiPageView(page, LOCAL);
+  assert.ok(built);
+  return built;
+}
+
+test("a workflow's API page: its run address, its model id on OpenAI's chat completions, and its own words", () => {
+  const v = workflowView();
+  assert.equal(v.title, "PDF summary API");
+  assert.equal(v.kind, "task");
+  assert.equal(v.agentHref, "/w/pdf-summary");
+  assert.equal(v.pageLabel, "The workflow's page");
+  assert.equal(v.startPlan, "A plan is started on the workflow's page.");
+  assert.equal(v.startFirst, "Start using the workflow on its page before your first call.");
+  assert.equal(v.otherAddresses, "Other addresses of this workflow");
+  assert.equal(v.callLine, "POST https://api.example.com/api/w/pdf-summary/run");
+  assert.equal(v.modelLine, "model: w/pdf-summary");
+  assert.deepEqual(v.callNotes, [WORKFLOW_API_PAGE_WORDS.runNote, WORKFLOW_API_PAGE_WORDS.form]);
+  assert.deepEqual(v.otherEndpoints, [
+    { id: "openai", line: "POST https://api.example.com/v1/chat/completions", says: "OpenAI's chat completions, with the model id above." },
+    { id: "access", line: "GET https://api.example.com/api/w/pdf-summary/access", says: "Where you stand: your plan and your credits. Reading it costs nothing." },
+  ]);
+  assert.equal(v.oneKey, "One key and one balance work for every listing you use.");
+  // The price per run after the plans, and never a free trial.
+  assert.deepEqual(v.plans.map((plan) => plan.id), ["p1"]);
+  assert.equal(v.payAsYouGo, "Or pay as you go: $0.05 a run");
+  assert.equal(v.priceLine, null);
+  assert.equal(workflowView(workflowPage({ plans: [] })).priceLine, "$0.05 per run");
+  assert.equal(workflowView(workflowPage({ trial: { id: "t", includedUses: 5, days: 7 } as unknown as null })).trialLine, null);
+  assert.deepEqual(v.refusals.map((refusal) => [refusal.status, refusal.code]), [[429, "workflow_busy"]]);
+  assert.deepEqual(v.headers.onPlan.map((header) => header.name), ON_PLAN);
+});
+
+test("an agent's API page keeps its own words for the link back, the plans and the other addresses", () => {
+  const v = view(chatPage());
+  assert.equal(v.pageLabel, API_PAGE_WORDS.agentPage);
+  assert.equal(v.startPlan, API_PAGE_WORDS.startPlan);
+  assert.equal(v.otherAddresses, API_PAGE_WORDS.otherAddresses);
+});
+
+test("a workflow's limits: a buyer's own, how many runs go at once and how long one may take, from the API's numbers", () => {
+  assert.deepEqual(workflowView().limits, [
+    "One buyer can send up to 10 requests a minute.",
+    "A buyer on no plan can send up to 200 requests a day. On a plan, the plan's count of uses takes the place of the daily limit.",
+    "Up to 3 runs of this workflow go at once, shared by everyone who uses it.",
+    "A run can take up to 10 minutes.",
+  ]);
+  assert.deepEqual(workflowLimitLines({ maxActiveRuns: 1 }, 1), [
+    "One run of this workflow goes at a time, shared by everyone who uses it.",
+    "A run can take up to 1 minute.",
+  ]);
+  assert.deepEqual(workflowLimitLines({ maxActiveRuns: 0 }, Number.NaN), []);
+  assert.deepEqual(workflowLimitLines(null, 0), []);
+  assert.deepEqual(workflowLimitLines(null, undefined), []);
+});
+
+test("no snippet or address of a workflow's API page names the owner's address or an agent's model", () => {
+  const v = workflowView();
+  const texts = [...v.snippets.map((snippet) => snippet.code), v.callLine, v.modelLine ?? "", ...v.otherEndpoints.map((endpoint) => endpoint.line)];
+  for (const text of texts) {
+    assert.ok(!text.includes("workflow/"), text);
+    assert.ok(!text.includes("a/"), text);
+  }
+  // The run address takes the input and nothing else.
+  for (const snippet of v.snippets) assert.ok(!/stream/i.test(snippet.code), snippet.id);
+});
+
+test("nothing on a workflow's API page speaks of an agent, a step, tokens, or who sells it", () => {
+  const dash = String.fromCharCode(0x2014);
+  const v = workflowView();
+  const sentences = [
+    v.title,
+    v.intro,
+    ...v.callNotes,
+    v.keyNote,
+    ...v.otherEndpoints.map((endpoint) => endpoint.says),
+    v.priceNote,
+    v.payAsYouGo ?? "",
+    ...v.limits,
+    v.oneKey,
+    v.startFirst,
+    v.startPlan,
+    v.pageLabel,
+    v.otherAddresses,
+    ...Object.values(WORKFLOW_API_PAGE_WORDS),
+  ];
+  for (const sentence of sentences) {
+    assert.ok(!/\bagents?\b|\bsteps?\b|token|unlimited|organi[sz]ation/i.test(sentence), sentence);
+    assert.ok(!/\bmodel\b/i.test(sentence) || sentence.includes("model id"), sentence);
+    assert.ok(!sentence.includes(dash), sentence);
+    assert.ok(/^[\x20-\x7e]*$/.test(sentence), sentence);
+  }
+});
+
+test("a workflow's API page with nothing to call, or not whole, is not drawn", () => {
+  assert.equal(apiPageView(workflowPage({ model: "" }), LOCAL), null);
+  assert.equal(apiPageView(workflowPage({ endpoints: [{ use: "access", method: "GET", path: "/api/w/pdf-summary/access" }] }), LOCAL), null);
+  assert.equal(isWorkflowApiPage(workflowPage()), true);
+  assert.equal(isWorkflowApiPage(chatPage()), false);
+  assert.equal(isWorkflowApiPage({ ...workflowPage(), unit: "message" }), false);
+  assert.equal(isWorkflowApiPage({ ...workflowPage(), name: "" }), false);
+  assert.equal(isWorkflowApiPage({ error: "workflow_not_found" }), false);
+  // Each reader takes only its own kind of page.
+  assert.equal(isAgentApiPage(workflowPage()), false);
+  assert.equal(isApiPageFor("workflow", workflowPage()), true);
+  assert.equal(isApiPageFor("workflow", chatPage()), false);
+  assert.equal(isApiPageFor("agent", chatPage()), true);
+  assert.equal(isApiPageFor("agent", workflowPage()), false);
 });

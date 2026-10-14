@@ -180,6 +180,26 @@ is not running the agent is paused: `use.access` says `paused: true`, `marketpla
 month already paid for is made longer by that time. To sell, `marketplace.createListing`
 takes `sells` (`"use"` by default, or `"copies"`), `allowedTools` and `publish`.
 
+A workflow someone sells is used the same way, by the slug of its listing, with `use.workflow`:
+
+```ts
+// Its page and its API page need no sign-in.
+const page = await wheels.use.workflow.page("weekly-release-notes"); // .listingId, .priceCents, .plans, .input.schema
+const { refusals } = await wheels.use.workflow.apiPage("weekly-release-notes");
+await wheels.marketplace.startUsing(page.listingId, { expected: { pricingModel: "per_request", pricePerRequestCents: page.priceCents } });
+const { access } = await wheels.use.workflow.access("weekly-release-notes");
+
+// One run on the answers to its form, by each field's name ({ prompt } for a form with no fields).
+const { output, billing } = await wheels.use.workflow.run("weekly-release-notes", { input: { prompt: "This week's merged changes" } });
+```
+
+A run can take up to 10 minutes, so `use.workflow.run` waits 11 minutes unless you pass `timeoutMs`: a
+client that gives up sooner cancels the run, and what was charged, or the use of a plan, is given back.
+The same workflow answers `inference.chat({ model: "w/weekly-release-notes", ... }, { timeoutMs: 11 * 60_000 })`.
+A workflow has no free trial and no copies. To sell one of yours, `marketplace.createListing` takes
+`orchestrationId` in place of `agentId`, with `pricingModel: "per_request"` and `pricePerRequestCents`
+(the price of one run); `setPlans` adds its plans.
+
 ## Hiring an offering
 
 An offering is a fixed task a publisher's agent, workflow or model runs for a set price. Hiring

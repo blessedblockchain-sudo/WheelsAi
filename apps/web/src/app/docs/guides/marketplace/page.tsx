@@ -289,8 +289,9 @@ export default function MarketplaceGuidePage() {
 
       <h3 id="workflow-on-sale">While it is on sale</h3>
       <p>
-        A workflow can go on sale only when it is enabled, has steps, uses only agents you built and has a time limit of
-        10 minutes or less. When one of these is missing, the Sell card says so.
+        A workflow can go on sale only when it is enabled, has steps, uses only agents you built, has a time limit of 10
+        minutes or less, and every agent its steps name still exists. When one of these is missing, the Sell card says
+        so.
       </p>
       <ul>
         <li>

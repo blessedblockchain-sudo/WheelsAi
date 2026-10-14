@@ -241,12 +241,15 @@ if (agentGpu.available) {
             methods: (
               <>
                 <code>access(handle)</code>, <code>chat(handle, &#123; messages, sessionId? &#125;)</code>,{" "}
-                <code>run(handle, &#123; input &#125;)</code>, <code>results(handle)</code>, <code>usage()</code>
+                <code>run(handle, &#123; input &#125;)</code>, <code>results(handle)</code>, <code>usage()</code>,{" "}
+                <code>workflow.page(slug)</code>, <code>workflow.apiPage(slug)</code>, <code>workflow.access(slug)</code>,{" "}
+                <code>workflow.run(slug, &#123; input &#125;)</code>
               </>
             ),
             endpoint: (
               <>
-                <code>/api/a/&#123;handle&#125;/...</code>, <code>GET /api/billing/marketplace-usage</code>
+                <code>/api/a/&#123;handle&#125;/...</code>, <code>/api/w/&#123;slug&#125;/...</code>,{" "}
+                <code>GET /api/billing/marketplace-usage</code>
               </>
             ),
           },
@@ -337,6 +340,20 @@ if (agentGpu.available) {
         <code>timeoutMs</code> at least as long as the workflow&apos;s time limit: a client that gives up first
         disconnects, and a disconnect cancels the run. See{" "}
         <Link href="/docs/api/workflows#openai">the workflow endpoint</Link>.
+      </p>
+      <p>
+        <code>use.workflow</code> is for a workflow another organization sells, named by the slug of its listing:{" "}
+        <code>page</code> and <code>apiPage</code> read its page and its API page, which anyone can read,{" "}
+        <code>access</code> says where you stand with it, and <code>run</code> runs it once on the answers to its form.
+        Start using it first with <code>marketplace.startUsing</code> or <code>marketplace.startPlan</code> on the{" "}
+        <code>listingId</code> of its page. A run can take up to 10 minutes, so <code>run</code> waits 11 minutes unless
+        you pass <code>timeoutMs</code>: a client that gives up sooner cancels the run, and what was charged, or the
+        use of a plan, is given back. The same workflow answers <code>inference.chat</code> with <code>model: &quot;w/&lt;slug&gt;&quot;</code>;
+        pass <code>&#123; timeoutMs: 11 * 60_000 &#125;</code> there too. To sell one of your own workflows,{" "}
+        <code>marketplace.createListing</code> takes <code>orchestrationId</code> in place of <code>agentId</code>, with{" "}
+        <code>pricingModel: &quot;per_request&quot;</code> and a price per run, and <code>setPlans</code> adds its plans.
+        See <Link href="/docs/api/workflows#sell">Sell a workflow</Link> and{" "}
+        <Link href="/docs/api/workflows#use-paid">Use a workflow you pay for</Link>.
       </p>
       <p>
         Billing amounts are dollars, as the API returns them. There is no <code>agents.stop</code> or{" "}

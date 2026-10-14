@@ -555,6 +555,46 @@ test("what the pages say of plans, the model list and a stopped listing is what 
   assert.doesNotMatch(text(guide), /that busy, try again in a minute, and nothing is charged/);
 });
 
+test("the guide names every rule of going on sale, and the SDK's pages name what the SDK has for a workflow", () => {
+  // The five rules of workflowSellableProblem, the last of them the agents its steps name.
+  const listing = apiSource("services/workflowListing.ts");
+  const rules = listing.slice(listing.indexOf("export function workflowSellableProblem"), listing.indexOf("export function workflowNotFound"));
+  for (const key of ["disabled", "noSteps", "marketplaceCopy", "tooLong", "agentGone"]) {
+    assert.match(rules, new RegExp(`return WORKFLOW_LISTING_MESSAGES\\.${key};`), key);
+  }
+  assert.match(rules, /if \(!workflow\.everyAgentExists\) return WORKFLOW_LISTING_MESSAGES\.agentGone;/);
+  assert.ok(
+    text(guide).includes(
+      "A workflow can go on sale only when it is enabled, has steps, uses only agents you built, has a time limit of 10 minutes or less, and every agent its steps name still exists.",
+    ),
+  );
+
+  // The SDK: use.workflow and its four calls, the run's wait, and a listing made with orchestrationId.
+  const sdk = (path: string) => readFileSync(join(here, "..", "..", "..", "..", "packages", "sdk", path), "utf8");
+  const resource = sdk("src/resources/useWorkflow.ts");
+  for (const call of ["page", "apiPage", "access", "run"]) assert.match(resource, new RegExp(`\\n    ${call}: \\(slug: string`), call);
+  assert.match(resource, /const PAID_RUN_TIMEOUT_MS = 11 \* 60_000;/);
+  assert.match(resource, /timeoutMs: options\?\.timeoutMs \?\? PAID_RUN_TIMEOUT_MS,/);
+  assert.match(sdk("src/resources/use.ts"), /workflow: useWorkflowMethods\(client\),/);
+  const market = sdk("src/resources/marketplace.ts");
+  assert.match(market, /export interface CreateWorkflowListingInput[\s\S]{0,300}?orchestrationId: string;\s+agentId\?: never;\s+pricingModel: "per_request";/);
+  const minutes = numberIn("services/workflowListing.ts", /PAID_WORKFLOW_MAX_RUN_MS = ([\d_]+);/) / 60_000;
+  assert.equal(minutes, 10);
+
+  const sdkPage = text(source("app/docs/sdk/page.tsx"));
+  const readme = said(sdk("README.md"));
+  for (const call of ["workflow.page(slug)", "workflow.apiPage(slug)", "workflow.access(slug)", "workflow.run(slug, { input })"]) {
+    assert.ok(sdkPage.includes(call), `the SDK page names ${call}`);
+  }
+  assert.ok(sdkPage.includes(`A run can take up to ${minutes} minutes, so run waits 11 minutes unless you pass timeoutMs`));
+  assert.ok(sdkPage.includes("marketplace.createListing takes orchestrationId in place of agentId"));
+  for (const call of ["use.workflow.page(", "use.workflow.apiPage(", "use.workflow.access(", "use.workflow.run("]) {
+    assert.ok(readme.includes(call), `the README calls ${call}`);
+  }
+  assert.ok(readme.includes(`A run can take up to ${minutes} minutes, so \`use.workflow.run\` waits 11 minutes unless you pass \`timeoutMs\``));
+  assert.ok(readme.includes("`marketplace.createListing` takes `orchestrationId` in place of `agentId`"));
+});
+
 test("the pages about a workflow on sale are plain ASCII and promise nothing the product does not do", () => {
   const parts: Array<[string, string]> = [
     ["workflows: sell and use", workflows.slice(workflows.indexOf('<h2 id="sell">'), workflows.indexOf('<h2 id="scheduler">'))],

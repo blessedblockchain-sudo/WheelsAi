@@ -1,8 +1,16 @@
 /**
  * Paid runs of a workflow on sale, by the slug of its listing.
  *
+ *   GET  /api/w/:slug           its page, before anyone pays (anyone)
+ *   GET  /api/w/:slug/api       its API page (anyone)
  *   GET  /api/w/:slug/access    what the caller may do with it right now
  *   POST /api/w/:slug/run       one paid run: `{ input: { ... } }`
+ *
+ * The two reads open to anyone are guarded as the agent's public page and
+ * its API page are (routes/publicAgent.ts): no sign-in, the global rate
+ * limit, and one 404 for every slug that has no page, so nothing tells a
+ * draft or an agent's listing from a slug nobody holds. What they say is
+ * services/workflowPublicPage.ts.
  *
  * Who: a session, or an API key. To pay a key must have been granted
  * agents:use by name, the scope it pays for an agent with; reading access
@@ -24,7 +32,14 @@ import type { PaidCaller } from "../services/paidUse.js";
 import { getWorkflowAccess, runPaidWorkflow, type PaidWorkflowDeps } from "../services/paidWorkflow.js";
 import { setUsageHeaders, usageHeadersOf } from "../services/usageHeaders.js";
 import { MAX_WORKFLOW_INPUT_BYTES } from "../services/workflowChat.js";
+import {
+  readWorkflowPublicSource,
+  workflowApiPageOf,
+  workflowPublicReadOf,
+  type WorkflowPublicPageDeps,
+} from "../services/workflowPublicPage.js";
 import { sendPaidRefusal, type PaidUseGuards } from "./paidUse.js";
+import { paidWorkflowOpenAiModel } from "./paidWorkflowCompletions.js";
 
 /**
  * The parser's own limit on a run's body. Twice the input a run takes: the
@@ -37,6 +52,11 @@ export interface PaidWorkflowRouteDeps {
   guards: PaidUseGuards;
   /** Built on first use, so registering the routes opens no connection. */
   paidWorkflow: () => PaidWorkflowDeps;
+  /**
+   * The reads of the two pages open to anyone, built on first use. When
+   * omitted those two routes are not registered.
+   */
+  publicPage?: () => WorkflowPublicPageDeps;
 }
 
 function callerOf(request: FastifyRequest): PaidCaller {
@@ -53,6 +73,7 @@ function callerOf(request: FastifyRequest): PaidCaller {
 export function createPaidWorkflowRoutes(deps: PaidWorkflowRouteDeps): FastifyPluginAsync {
   let paidWorkflow: PaidWorkflowDeps | null = null;
   const core = () => (paidWorkflow ??= deps.paidWorkflow());
+  let publicPage: WorkflowPublicPageDeps | null = null;
   const { auth, use } = deps.guards;
 
   return async (app) => {
@@ -64,6 +85,39 @@ export function createPaidWorkflowRoutes(deps: PaidWorkflowRouteDeps): FastifyPl
       reply.header("cache-control", "no-store");
       return reply.status(413).send({ error: "input_too_large", message: TASK_MESSAGES.inputTooLarge });
     });
+
+    const publicReads = deps.publicPage;
+    if (publicReads) {
+      const reads = () => (publicPage ??= publicReads());
+
+      // No sign-in: the page is for people who have not started yet.
+      app.get<{ Params: { slug: string } }>(
+        "/w/:slug",
+        { schema: { tags: ["Paid use"], description: "The page of a workflow on sale" } },
+        async (request, reply) => {
+          const source = await readWorkflowPublicSource(request.params.slug, reads());
+          if (!source) return reply.status(404).send({ error: "workflow_not_found" });
+          return reply.status(200).send(workflowPublicReadOf(source));
+        },
+      );
+
+      // The same read, the same 404.
+      app.get<{ Params: { slug: string } }>(
+        "/w/:slug/api",
+        { schema: { tags: ["Paid use"], description: "The API page of a workflow on sale" } },
+        async (request, reply) => {
+          const read = reads();
+          const source = await readWorkflowPublicSource(request.params.slug, read);
+          if (!source) return reply.status(404).send({ error: "workflow_not_found" });
+          return reply.status(200).send(
+            workflowApiPageOf(source, {
+              model: paidWorkflowOpenAiModel(source.listing.slug),
+              publicApiUrl: read.publicApiUrl ?? null,
+            }),
+          );
+        },
+      );
+    }
 
     app.get<{ Params: { slug: string } }>(
       "/w/:slug/access",

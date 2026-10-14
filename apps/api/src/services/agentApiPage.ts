@@ -196,8 +196,11 @@ export const AGENT_API_REFUSALS: readonly AgentApiRefusal[] = [...PER_USE_REFUSA
 // The page
 // ============================================
 
-/** The base address as it is told: no slash at its end, and nothing that is not an address. */
-function baseUrlOf(raw: string | null | undefined): string | null {
+/**
+ * The base address as it is told: no slash at its end, and nothing that is
+ * not an address. The API page of a workflow on sale tells it the same way.
+ */
+export function baseUrlOf(raw: string | null | undefined): string | null {
   if (typeof raw !== "string") return null;
   const trimmed = raw.trim().replace(/\/+$/, "");
   return /^https?:\/\/[^\s/]+/.test(trimmed) ? trimmed : null;

@@ -9,7 +9,11 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  LISTING_USE_WORDS,
+  LISTING_WORKFLOW_WORDS,
   copyPriceText,
+  listingChipText,
+  listingPageParts,
   listingCountText,
   listingCta,
   listingInstallStats,
@@ -370,4 +374,112 @@ test("the words of plans on the marketplace never say what a buyer is not told",
     assert.equal(/[\u2013\u2014]/.test(sentence), false, sentence);
     assert.doesNotMatch(sentence, /unlimited|trial|subscriber|people|token|organization/i, sentence);
   }
+});
+
+// ============================================
+// A workflow's listing
+// ============================================
+
+function workflowListing(over: Partial<Listing> = {}): Listing {
+  return listing({
+    productKind: "workflow",
+    agentId: null,
+    slug: "weekly-report",
+    unit: "run",
+    pricePerRequestCents: 25,
+    agent: undefined,
+    ...over,
+  });
+}
+
+test("a workflow's listing: the price per run, and the button to its page /w/<slug>", () => {
+  const cta = listingCta({ listing: workflowListing(), authed: false, install: null });
+  assert.equal(cta.sellsUse, true);
+  assert.equal(cta.price, "$0.25");
+  assert.equal(cta.priceNote, "$0.25 per run, charged as you go.");
+  assert.deepEqual(cta.button, { type: "link", label: "Use this workflow", href: "/w/weekly-report", tone: "primary", icon: "play" });
+  assert.equal(cta.status, null);
+  assert.equal(cta.footnote, "You use this workflow on its page. You do not get a copy.");
+  assert.equal(cta.secondary, null);
+});
+
+test("a workflow in use says so and opens its page", () => {
+  const cta = listingCta({ listing: workflowListing(), authed: true, install: install() });
+  assert.equal(cta.status, "You use this workflow.");
+  assert.deepEqual(cta.button, { type: "link", label: "Open", href: "/w/weekly-report", tone: "success", icon: "check" });
+  // A stale copy id never offers a copy of a workflow.
+  assert.equal(listingCta({ listing: workflowListing(), authed: true, install: install({ kind: "copy", clonedAgentId: "c1" }) }).secondary, null);
+});
+
+test("a workflow's listing with plans names both ways to pay, per run", () => {
+  const cta = listingCta({ listing: workflowListing({ plansFromCents: 900 }), authed: false, install: null });
+  assert.equal(cta.priceNote, "From $0.25 a run. Plans from $9.00 for 30 days.");
+});
+
+test("a workflow's listing never opens an agent's page or reads as copies, whatever the row carries", () => {
+  const odd = workflowListing({ agent: { handle: "support-bot" }, sells: "copies" });
+  const cta = listingCta({ listing: odd, authed: true, install: null });
+  assert.equal(cta.sellsUse, true);
+  assert.equal(cta.button?.type === "link" ? cta.button.href : null, "/w/weekly-report");
+  // An older API that sends no productKind but no agent id either: it is a workflow, not a nameless agent.
+  const unsaid = listingCta({ listing: workflowListing({ productKind: undefined }), authed: false, install: null });
+  assert.equal(unsaid.button?.type === "link" ? unsaid.button.href : null, "/w/weekly-report");
+});
+
+test("an agent's listing reads exactly as before when it says it is an agent", () => {
+  for (const authed of [false, true]) {
+    for (const held of [null, install()]) {
+      assert.deepEqual(
+        listingCta({ listing: listing({ productKind: "agent", agentId: "a1" }), authed, install: held }),
+        listingCta({ listing: listing(), authed, install: held }),
+      );
+    }
+  }
+  assert.equal(LISTING_USE_WORDS.button, "Use this agent");
+});
+
+test("the chip says Workflow in place of a framework", () => {
+  assert.equal(listingChipText({ productKind: "workflow", agentId: null }), "Workflow");
+  assert.equal(listingChipText({ agentId: null }), "Workflow");
+  assert.equal(listingChipText({ productKind: "agent", agentId: "a1", agent: { framework: "langchain" } }), "langchain");
+  assert.equal(listingChipText({ agentId: "a1", agent: { framework: "" } }), "custom");
+  assert.equal(listingChipText({ agentId: "a1" }), "custom");
+});
+
+test("a workflow's listing page has none of an agent's parts, and its words never say agent", () => {
+  const parts = listingPageParts({ productKind: "workflow", agentId: null });
+  assert.deepEqual(parts, {
+    kind: "workflow",
+    hire: false,
+    tryIt: false,
+    tags: false,
+    token: false,
+    transparency: false,
+    framework: false,
+    publisher: false,
+    reviewsEmpty: "Be the first to review this workflow.",
+  });
+  const agentParts = listingPageParts({ productKind: "agent", agentId: "a1" });
+  assert.deepEqual(agentParts, {
+    kind: "agent",
+    hire: true,
+    tryIt: true,
+    tags: true,
+    token: true,
+    transparency: true,
+    framework: true,
+    publisher: true,
+    reviewsEmpty: "Be the first to review this agent.",
+  });
+  // An older API that says nothing: an agent's page, as it was.
+  assert.deepEqual(listingPageParts({ agentId: "a1" }), agentParts);
+  const words = [
+    ...Object.values(LISTING_WORKFLOW_WORDS),
+    parts.reviewsEmpty,
+    ...Object.values(listingCta({ listing: workflowListing(), authed: true, install: install() })).map((value) => JSON.stringify(value)),
+    ...Object.values(listingCta({ listing: workflowListing({ plansFromCents: 900 }), authed: false, install: null })).map((value) =>
+      JSON.stringify(value),
+    ),
+  ];
+  for (const word of words) assert.doesNotMatch(word, /\bagents?\b|[\u2013\u2014]/i, word);
 });

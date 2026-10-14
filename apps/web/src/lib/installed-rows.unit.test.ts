@@ -7,11 +7,16 @@ import { test } from "node:test";
 
 import type { MarketplaceInstallAccess, MarketplaceListing, MarketplaceSubscription, PaidUsePlan, PlanOffer } from "./api";
 import {
+  INSTALLED_PAGE_WORDS,
   INSTALLED_WORDS,
+  INSTALLED_WORKFLOW_WORDS,
   askAdminOnce,
   installedConfirm,
   installedRow,
+  licenceProductKind,
+  licenceUseHref,
   shortDay,
+  openHrefOf,
   type InstalledLicence,
 } from "./installed-rows";
 
@@ -139,7 +144,7 @@ test("a use row never links to /dashboard/agents/, whatever its access", () => {
     const row = installedRow({ ...install, clonedAgentId: "c9" }, FMT);
     assert.doesNotMatch(JSON.stringify(row), /\/dashboard\/agents\//, name);
     const open = row.actions.find((a) => a.id === "open");
-    if (install.agent.handle) {
+    if (install.agent?.handle) {
       assert.equal(row.openHref, "/a/support-bot", name);
       assert.deepEqual(open, { id: "open", label: "Open", href: "/a/support-bot" }, name);
     } else {
@@ -873,4 +878,129 @@ test("after a trial ended the row says so in the trial's words and links to the 
   // A buyer who agreed to pay per use goes on per use when the trial ends: today's row.
   const perUse = using({ subscription: sub({ status: "expired", hasAccess: false, priceCents: 0, plan: null }) });
   assert.deepEqual(installedRow(perUse, FMT).line, installedRow(using(), FMT).line);
+});
+
+// ============================================
+// A workflow's licence
+// ============================================
+
+/** A buyer's licence to run a workflow: no agent, the listing's slug, sold per run. */
+function workflowLicence(over: Partial<InstalledLicence> = {}): InstalledLicence {
+  return using({
+    productKind: "workflow",
+    slug: "weekly-report",
+    agent: null,
+    listing: listing({ productKind: "workflow", agentId: null, title: "Weekly report", slug: "weekly-report", unit: "run", pricePerRequestCents: 25 }),
+    acceptedPricing: { pricingModel: "per_request", pricePerRequestCents: 25, acceptedAt: "2026-10-02T12:00:00.000Z" },
+    ...over,
+  });
+}
+
+/** Every shape a workflow's licence can be in, by access: per run and on a plan. */
+function workflowCases(): Array<{ name: string; install: InstalledLicence }> {
+  const cases: Array<{ name: string; install: InstalledLicence }> = [];
+  for (const access of ACCESSES) {
+    cases.push({ name: `${access}, per run`, install: workflowLicence({ access }) });
+    cases.push({
+      name: `${access}, per run, agreed to another price`,
+      install: workflowLicence({ access, acceptedPricing: { pricingModel: "per_request", pricePerRequestCents: 10, acceptedAt: null } }),
+    });
+    cases.push({ name: `${access}, no longer sold`, install: workflowLicence({ access, listing: listing({ productKind: "workflow", agentId: null, slug: "weekly-report", unit: "run", status: "archived" }) }) });
+    cases.push({
+      name: `${access}, on a plan`,
+      install: workflowLicence({
+        access,
+        acceptedPricing: { pricingModel: null, pricePerRequestCents: null, acceptedAt: null },
+        listing: listing({ productKind: "workflow", agentId: null, slug: "weekly-report", unit: "run", plans: [STARTER, PRO] }),
+        subscription: sub(access === "subscribed" ? { plan: plan() } : { status: "expired", hasAccess: false, plan: plan() }),
+      }),
+    });
+  }
+  return cases;
+}
+
+test("one rule says where a row opens: /w/<slug> for a workflow, /a/<handle> for an agent", () => {
+  assert.equal(openHrefOf({ productKind: "workflow", slug: "weekly-report", handle: "ignored" }), "/w/weekly-report");
+  assert.equal(openHrefOf({ productKind: "workflow", slug: null }), null);
+  assert.equal(openHrefOf({ productKind: "agent", slug: "support-bot", handle: "support-bot" }), "/a/support-bot");
+  assert.equal(openHrefOf({ productKind: "agent", handle: null }), null);
+  // An older API that says nothing of the product: an agent, by its handle.
+  assert.equal(openHrefOf({ handle: "support-bot" }), "/a/support-bot");
+  // No productKind and a listing with no agent: a workflow, never a nameless agent.
+  assert.equal(openHrefOf({ agentId: null, slug: "weekly-report" }), "/w/weekly-report");
+});
+
+test("a workflow's licence is told by the API's word or by its listing having no agent", () => {
+  assert.equal(licenceProductKind(workflowLicence()), "workflow");
+  assert.equal(licenceProductKind(workflowLicence({ productKind: undefined })), "workflow");
+  assert.equal(licenceProductKind(using()), "agent");
+  assert.equal(licenceUseHref(workflowLicence()), "/w/weekly-report");
+  // The licence's slug first, then its listing's.
+  assert.equal(licenceUseHref(workflowLicence({ slug: undefined })), "/w/weekly-report");
+  assert.equal(licenceUseHref(using()), "/a/support-bot");
+  assert.equal(licenceUseHref(using({ agent: null })), null);
+});
+
+test("a workflow's row opens its page in every shape, never reads an agent and never names one", () => {
+  for (const { name, install } of workflowCases()) {
+    const row = installedRow(install, FMT);
+    assert.equal(row.kind, "use", name);
+    assert.equal(row.openHref, "/w/weekly-report", name);
+    assert.deepEqual(row.actions.find((a) => a.id === "open"), { id: "open", label: "Open", href: "/w/weekly-report" }, name);
+    const text = JSON.stringify(row);
+    assert.doesNotMatch(text, /\/a\/|\/dashboard\/agents\//, name);
+    assert.doesNotMatch(text, /\bagents?\b/i, name);
+    for (const action of ["accept_pricing", "resubscribe", "uninstall"] as const) {
+      const dialog = installedConfirm(install, action, FMT);
+      if (dialog) assert.doesNotMatch(JSON.stringify(dialog), /\bagents?\b/i, `${name}: ${action}`);
+    }
+  }
+});
+
+test("a workflow's row says the workflow's words where an agent's say the agent's", () => {
+  assert.deepEqual(installedRow(workflowLicence({ access: "uninstalled" }), FMT).line, {
+    text: "You have stopped using this workflow.",
+    tone: "bad",
+  });
+  assert.equal(INSTALLED_WORKFLOW_WORDS.stopped, "You have stopped using this workflow.");
+  assert.deepEqual(installedRow(workflowLicence({ access: "pricing_changed", acceptedPricing: { pricingModel: "monthly", pricePerRequestCents: null, acceptedAt: null } }), FMT).line, {
+    text: "This workflow is now sold per run ($0.25). Nothing is charged until you accept the new price.",
+    tone: "bad",
+  });
+  assert.deepEqual(installedRow(workflowLicence(), FMT).line, { text: "$0.25 per run. 37 uses, $1.85 spent.", tone: "ok" });
+  assert.deepEqual(installedConfirm(workflowLicence({ access: "pricing_changed" }), "accept_pricing", FMT), {
+    title: "Accept the new price for Weekly report?",
+    description:
+      "Each run costs $0.25, paid from your credits. It is charged when a run starts and refunded if the run does not finish. You can stop at any time.",
+    confirmLabel: "Accept $0.25 per run",
+  });
+  // The same shapes of an agent's row say what they said.
+  assert.deepEqual(installedRow(using({ access: "uninstalled" }), FMT).line, { text: INSTALLED_WORDS.stopped, tone: "bad" });
+  assert.equal(INSTALLED_WORDS.stopped, "You have stopped using this agent.");
+});
+
+test("a workflow's row on a plan is a plan's row, opening the workflow's page", () => {
+  const row = installedRow(
+    workflowLicence({
+      access: "subscribed",
+      acceptedPricing: { pricingModel: null, pricePerRequestCents: null, acceptedAt: null },
+      listing: listing({ productKind: "workflow", agentId: null, slug: "weekly-report", unit: "run", plans: [STARTER, PRO] }),
+      subscription: sub({ plan: plan() }),
+    }),
+    FMT,
+  );
+  assert.equal(row.priceLabel, "Starter, $9.00 for 30 days");
+  assert.deepEqual(row.line, { text: "188 of 500 uses left. Renews 12 Nov.", tone: "ok" });
+  assert.deepEqual(labels(row), ["Open", "View Listing", "Move up", "Cancel renewal", "Write Review", "Stop using"]);
+  assert.equal(row.openHref, "/w/weekly-report");
+});
+
+test("the page's words name agents and workflows both", () => {
+  assert.deepEqual(INSTALLED_PAGE_WORDS, {
+    header: "Agents and workflows you use, and copies you own.",
+    count: "Agents and workflows",
+    listTitle: "Your agents and workflows",
+  });
+  // The words an agent's rows and the header had stay as they were.
+  assert.equal(INSTALLED_WORDS.header, "Agents you use, and copies you own.");
 });

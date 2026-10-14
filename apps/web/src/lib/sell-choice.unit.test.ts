@@ -45,6 +45,7 @@ import {
   withChoice,
   withCopies,
   withUse,
+  sellWordsOf,
   type SellForm,
   type SellListing,
 } from "./sell-choice";
@@ -620,4 +621,92 @@ test("the offering takes its form from the agent", () => {
     slaSeconds: 3_600,
     fromAgentForm: true,
   });
+});
+
+// ============================================
+// A workflow: one choice, pay per run
+// ============================================
+
+test("an agent's words are SELL_WORDS exactly; a workflow's have the same keys and never say agent", () => {
+  assert.equal(sellWordsOf(), SELL_WORDS);
+  assert.equal(sellWordsOf("agent"), SELL_WORDS);
+  const words = sellWordsOf("workflow");
+  assert.deepEqual(Object.keys(words).sort(), Object.keys(SELL_WORDS).sort());
+  for (const [key, sentence] of Object.entries(words)) {
+    assert.doesNotMatch(sentence, /\bagent\b/i, key);
+    assert.doesNotMatch(sentence, /[\u2013\u2014]|unlimited|token/i, key);
+    // A workflow's listing has no Hire offering and no task with guaranteed delivery.
+    assert.doesNotMatch(sentence, /\bhire\b|guaranteed delivery|per task/i, key);
+  }
+  assert.equal(words.paidTasksUnavailable, words.priceTurnsOffFree);
+  assert.equal(words.describe, "Add one line that tells people what this workflow does.");
+  assert.equal(words.question, SELL_WORDS.question);
+});
+
+test("a workflow is offered one choice, pay per run, with its price floor and its own hint", () => {
+  const choices = sellChoices("conversation", LIMITS, "workflow");
+  assert.deepEqual(choices, [
+    {
+      id: "per_use",
+      title: "Pay per run",
+      sentence: "People pay for each run from their WheelsAI credits.",
+      selectable: true,
+      priceLabel: "Price per run (minimum $0.05)",
+      priceHint: "Charged when a run starts. Refunded if the run does not finish.",
+    },
+  ]);
+  // No Free, no Monthly, no Token holders, and no copies whatever the form says.
+  assert.deepEqual(choicesOf(form({ sells: "copies" }), null, LIMITS, "workflow"), choices);
+  // An agent's choices are what they were.
+  assert.deepEqual(sellChoices("conversation", LIMITS, "agent"), sellChoices("conversation", LIMITS));
+  assert.deepEqual(choicesOf(form(), "task", LIMITS, "agent"), choicesOf(form(), "task", LIMITS));
+});
+
+test("a workflow's form is always pay per run, with its listing's price", () => {
+  assert.deepEqual(formOfListing(null, null, "workflow"), {
+    sells: "use",
+    choice: "per_use",
+    perUsePrice: "",
+    monthlyPrice: "",
+    allowOutbound: false,
+  });
+  const listing: SellListing = { sells: "use", pricingModel: "per_request", pricePerRequestCents: 25, allowedTools: ["http_request"] };
+  assert.deepEqual(formOfListing(listing, null, "workflow"), {
+    sells: "use",
+    choice: "per_use",
+    perUsePrice: "0.25",
+    monthlyPrice: "",
+    allowOutbound: false,
+  });
+  // An agent's listing reads as it did.
+  assert.deepEqual(formOfListing(listing, "conversation", "agent"), formOfListing(listing, "conversation"));
+});
+
+test("a workflow's save sends use per request with its price and no tools", () => {
+  const sent = buildSellSave(form({ choice: "per_use", perUsePrice: "0.10", allowOutbound: true }), {}, LIMITS, "workflow");
+  assert.deepEqual(sent, { ok: true, save: { sells: "use", pricingModel: "per_request", pricePerRequestCents: 10 } });
+  assert.deepEqual(buildSellSave(form({ choice: "per_use", perUsePrice: "0.01" }), {}, LIMITS, "workflow"), {
+    ok: false,
+    errors: { perUsePrice: "The price per run must be at least $0.05." },
+  });
+  assert.deepEqual(buildSellSave(form({ choice: "per_use", perUsePrice: "" }), {}, LIMITS, "workflow"), {
+    ok: false,
+    errors: { perUsePrice: "Enter a price per run." },
+  });
+  // A choice a workflow does not have is refused, naming the one it has.
+  assert.deepEqual(buildSellSave(form({ choice: "monthly", monthlyPrice: "9" }), {}, LIMITS, "workflow"), {
+    ok: false,
+    errors: { choice: "Choose Pay per run." },
+  });
+  assert.equal(sellProblem(form({ choice: "per_use", perUsePrice: "0.01" }), {}, LIMITS, "workflow"), "The price per run must be at least $0.05.");
+  assert.equal(sellProblem(form({ choice: "per_use", perUsePrice: "1" }), {}, LIMITS, "workflow"), null);
+});
+
+test("a workflow's earnings line is per run, from the API's own split", () => {
+  const per = form({ choice: "per_use", perUsePrice: "0.10" });
+  const { creatorCents } = splitCents(10);
+  assert.equal(earningsLine(per, "conversation", LIMITS, "workflow"), `At $0.10 a run you earn $${(creatorCents / 100).toFixed(2)}.`);
+  assert.equal(earningsLine(form({ choice: "per_use", perUsePrice: "0.01" }), null, LIMITS, "workflow"), null);
+  // An agent that talks still earns by the message.
+  assert.match(earningsLine(per, "conversation", LIMITS) ?? "", /a message/);
 });

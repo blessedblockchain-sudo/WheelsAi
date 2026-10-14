@@ -9,6 +9,10 @@
  *         copy, so a use row never links into the dashboard's agents.
  *   copy  the buyer's own copy. Its row is what Installed has always shown.
  *
+ * A workflow's licence is a use row with no agent: it opens the workflow's
+ * page, `/w/<listing slug>`, and its sentences name the workflow. An agent's
+ * rows are what they were.
+ *
  * Pure: no IO, no React. The page draws what this returns and sends the
  * `terms` of the row (the pricing the person was shown) with an acceptance.
  *
@@ -17,14 +21,16 @@
  * up. So is a row on the listing's free trial, which can only be stopped.
  * Every other row is what it was before plans existed.
  */
-import type {
-  MarketplaceAcceptedPricing,
-  MarketplaceInstallAccess,
-  MarketplaceInstallKind,
-  MarketplaceLicenceAgent,
-  MarketplaceListing,
-  MarketplacePricingTerms,
-  MarketplaceSubscription,
+import {
+  productKindOf,
+  type MarketplaceAcceptedPricing,
+  type MarketplaceInstallAccess,
+  type MarketplaceInstallKind,
+  type MarketplaceLicenceProduct,
+  type MarketplaceListing,
+  type MarketplacePricingTerms,
+  type MarketplaceProductKind,
+  type MarketplaceSubscription,
 } from "./api";
 import { formatCents } from "./agent-page";
 import {
@@ -39,14 +45,16 @@ import {
 } from "./installed-plans";
 import { priceTextForUse, unitWordOfUse } from "./listing-cta";
 
-/** A row of `GET /api/marketplace/my-installs`. */
-export interface InstalledLicence {
+/**
+ * A row of `GET /api/marketplace/my-installs`. What it is for (`productKind`,
+ * `slug`, `agent`) is the licence's: a workflow's has no agent.
+ */
+export interface InstalledLicence extends MarketplaceLicenceProduct {
   id: string;
   listingId: string;
   kind: MarketplaceInstallKind;
   /** null for a "use" row: there is no copy to open. */
   clonedAgentId: string | null;
-  agent: MarketplaceLicenceAgent;
   status: string;
   totalRequests: number;
   totalSpentCents: number;
@@ -134,6 +142,36 @@ export interface InstalledFormat {
   locale?: string;
 }
 
+/**
+ * Where a row of what an organization uses opens: a workflow's page,
+ * `/w/<listing slug>`, or an agent's, `/a/<handle>`. null when there is none
+ * (an agent with no page, a workflow whose slug was not said). Installed and
+ * the Usage page both open their rows by this one rule.
+ */
+export function openHrefOf(thing: {
+  productKind?: MarketplaceProductKind;
+  agentId?: string | null;
+  slug?: string | null;
+  handle?: string | null;
+}): string | null {
+  if (productKindOf(thing) === "workflow") return thing.slug ? `/w/${thing.slug}` : null;
+  return thing.handle ? `/a/${thing.handle}` : null;
+}
+
+/** What a licence is for: a workflow when the API says so or its listing names no agent. */
+export function licenceProductKind(install: Pick<InstalledLicence, "productKind" | "listing">): MarketplaceProductKind {
+  return productKindOf({ productKind: install.productKind, agentId: install.listing.agentId });
+}
+
+/** Where the row of a licence opens, by `openHrefOf`. A copy opens in the dashboard instead. */
+export function licenceUseHref(install: Pick<InstalledLicence, "productKind" | "slug" | "agent" | "listing">): string | null {
+  return openHrefOf({
+    productKind: licenceProductKind(install),
+    slug: install.slug ?? install.listing.slug,
+    handle: install.agent?.handle ?? null,
+  });
+}
+
 /** The words of Installed. */
 export const INSTALLED_WORDS = {
   header: "Agents you use, and copies you own.",
@@ -148,6 +186,19 @@ export const INSTALLED_WORDS = {
   nowFree: "This agent is now free to use on its page.",
   /** Said once to a member who may not move up or resume a renewal. */
   askAdmin: "Ask an owner or admin of your organization to move up a plan or to resume a renewal.",
+} as const;
+
+/** The words of Installed that name a workflow, beside an agent's. */
+export const INSTALLED_WORKFLOW_WORDS = {
+  stopped: "You have stopped using this workflow.",
+  stopFailed: "Could not stop using this workflow",
+} as const;
+
+/** The words of the Installed page now that it lists workflows too. */
+export const INSTALLED_PAGE_WORDS = {
+  header: "Agents and workflows you use, and copies you own.",
+  count: "Agents and workflows",
+  listTitle: "Your agents and workflows",
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -377,8 +428,13 @@ function offerForUse(install: InstalledLicence): { sentence: string; button: str
   if (listing.pricingModel === "per_request" && listing.pricePerRequestCents) {
     const unit = unitWordOfUse(listing.unit);
     const price = formatCents(listing.pricePerRequestCents);
+    // A run of a workflow is refunded when it does not finish, as the API's paid run says.
+    const refunded =
+      licenceProductKind(install) === "workflow"
+        ? "It is charged when a run starts and refunded if the run does not finish."
+        : "It is charged when you send it and refunded if the agent does not answer.";
     return {
-      sentence: `Each ${unit} costs ${price}, paid from your credits. It is charged when you send it and refunded if the agent does not answer. You can stop at any time.`,
+      sentence: `Each ${unit} costs ${price}, paid from your credits. ${refunded} You can stop at any time.`,
       button: `Accept ${price} per ${unit}`,
       monthly: false,
     };
@@ -397,6 +453,8 @@ function offerForUse(install: InstalledLicence): { sentence: string; button: str
 function lineForUse(install: InstalledLicence, fmt: InstalledFormat): InstalledLine {
   const { listing, subscription: sub, access } = install;
   const offered = sellsUseNow(install);
+  // What the sentences name: "this agent", or "this workflow" for a workflow's licence.
+  const thing = licenceProductKind(install);
   const notOffered: InstalledLine = { text: INSTALLED_WORDS.notOffered, tone: "bad" };
 
   if (access === "subscribed") {
@@ -410,7 +468,7 @@ function lineForUse(install: InstalledLicence, fmt: InstalledFormat): InstalledL
     }
     if (listing.pricingModel !== "monthly") {
       return {
-        text: `The owner changed how this agent is sold. You keep access until ${until}. After that, nothing is charged until you accept the new price.`,
+        text: `The owner changed how this ${thing} is sold. You keep access until ${until}. After that, nothing is charged until you accept the new price.`,
         tone: "warn",
       };
     }
@@ -431,7 +489,7 @@ function lineForUse(install: InstalledLicence, fmt: InstalledFormat): InstalledL
       };
     }
     if (listing.pricingModel === "free") return { text: `Free to use. ${uses}.`, tone: "ok" };
-    return { text: `You use this agent. ${uses}.`, tone: "ok" };
+    return { text: `You use this ${thing}. ${uses}.`, tone: "ok" };
   }
 
   if (access === "pricing_changed") {
@@ -447,21 +505,23 @@ function lineForUse(install: InstalledLicence, fmt: InstalledFormat): InstalledL
         };
       }
       return {
-        text: `This agent is now sold per ${unit} (${now}). Nothing is charged until you accept the new price.`,
+        text: `This ${thing} is now sold per ${unit} (${now}). Nothing is charged until you accept the new price.`,
         tone: "bad",
       };
     }
     if (listing.pricingModel === "monthly" && listing.monthlyPriceCents) {
       return {
-        text: `This agent is now sold by the month (${formatCents(listing.monthlyPriceCents)}). Nothing is charged until you subscribe.`,
+        text: `This ${thing} is now sold by the month (${formatCents(listing.monthlyPriceCents)}). Nothing is charged until you subscribe.`,
         tone: "bad",
       };
     }
     // An ended subscription to an agent that is free now: there is no price
     // to accept, and its page takes anyone.
-    if (listing.pricingModel === "free") return { text: INSTALLED_WORDS.nowFree, tone: "ok" };
+    if (listing.pricingModel === "free") {
+      return { text: thing === "workflow" ? "This workflow is now free to use on its page." : INSTALLED_WORDS.nowFree, tone: "ok" };
+    }
     return {
-      text: "The owner changed how this agent is sold. Nothing is charged until you accept the new price.",
+      text: `The owner changed how this ${thing} is sold. Nothing is charged until you accept the new price.`,
       tone: "bad",
     };
   }
@@ -476,7 +536,7 @@ function lineForUse(install: InstalledLicence, fmt: InstalledFormat): InstalledL
   }
   if (access === "not_offered" || access === "unlisted") return notOffered;
   // none, uninstalled: a licence that grants nothing.
-  return { text: INSTALLED_WORDS.stopped, tone: "bad" };
+  return { text: thing === "workflow" ? INSTALLED_WORKFLOW_WORDS.stopped : INSTALLED_WORDS.stopped, tone: "bad" };
 }
 
 /**
@@ -490,7 +550,7 @@ function lineForUse(install: InstalledLicence, fmt: InstalledFormat): InstalledL
  */
 function rowForPlan(install: InstalledLicence, fmt: InstalledFormat, viewer: InstalledViewer): InstalledRow {
   const { listing } = install;
-  const openHref = install.agent.handle ? `/a/${install.agent.handle}` : null;
+  const openHref = licenceUseHref(install);
   const renewal = planRenewal(install);
 
   const actions: InstalledAction[] = [];
@@ -517,7 +577,7 @@ function rowForPlan(install: InstalledLicence, fmt: InstalledFormat, viewer: Ins
 function rowForUse(install: InstalledLicence, fmt: InstalledFormat, viewer: InstalledViewer): InstalledRow {
   if (planOfInstall(install)) return rowForPlan(install, fmt, viewer);
   const { listing, subscription: sub, access } = install;
-  const openHref = install.agent.handle ? `/a/${install.agent.handle}` : null;
+  const openHref = licenceUseHref(install);
   const offer = offerForUse(install);
   const subscribed = access === "subscribed" && !!sub;
   const renewable =

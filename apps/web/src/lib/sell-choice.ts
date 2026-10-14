@@ -5,7 +5,8 @@
  * what a save sends to the listing routes, what the listing an agent has now
  * means as a choice, and what a change does to the people who already pay.
  * Pure, so the Sell tab and the listing wizard only lay it out and cannot
- * drift apart.
+ * drift apart. A workflow is asked the same question in its own words
+ * (`SellSubject`): it has one answer, pay per run, with plans under it.
  *
  * Every amount is whole cents. What a creator earns comes from `splitCents`,
  * the API's own integer rule, never from a multiplication by 0.9.
@@ -55,6 +56,67 @@ export const SELL_WORDS = {
   stopSelling: "Stop selling",
   describe: "Add one line that tells people what this agent does.",
 } as const;
+
+/**
+ * What "Who can use it?" is asked about: an agent, or a workflow. A workflow
+ * is sold by use only, by the run, with plans on top: no Free, no Monthly, no
+ * Token holders, no copies and no tools to allow.
+ */
+export type SellSubject = "agent" | "workflow";
+
+/** The words of the question, by their keys in SELL_WORDS. */
+export type SellWords = { readonly [K in keyof typeof SELL_WORDS]: string };
+
+/** The API's sentences for what a workflow is not sold with (services/workflowListing.ts), each written once. */
+const COPIES_NOT_SOLD = "A workflow is sold by use. Copies of a workflow are not sold.";
+const SOLD_PER_RUN = "A workflow is sold per run. Add plans for buyers who want a number of uses for 30 days.";
+/** What mode "hired" refuses in a paid run of a workflow; the Sell part reads it from here. */
+const PAID_RUN_CANNOT =
+  "In a paid run your steps cannot move money, change your saved files or call a web address with the HTTP request tool.";
+/** Where a paid run is seen by the creator; the Sell part reads it from here. */
+const PAID_RUNS_LISTED = "Paid runs appear in this workflow's runs, with what the buyer sent.";
+
+/**
+ * The same keys, said of a workflow. The words about what a workflow is not
+ * sold with (copies, tools to allow, free use, a task with guaranteed
+ * delivery) say why, in the API's own sentences, so no screen can draw an
+ * offer the API refuses.
+ */
+const WORKFLOW_QUESTION_WORDS: SellWords = {
+  question: SELL_WORDS.question,
+  lead: "People run your workflow on its page or through the API. They never see its steps, its agents or its settings.",
+  perUseHint: "Charged when a run starts. Refunded if the run does not finish.",
+  modelCost: "When your steps run on WheelsAI's models, the cost of the model comes out of your share.",
+  signIn: SELL_WORDS.signIn,
+  priceTurnsOffFree: SOLD_PER_RUN,
+  forPayers: PAID_RUN_CANNOT,
+  forPayersNoOutbound: PAID_RUN_CANNOT,
+  allowOutbound: "A workflow listing has no tools to allow.",
+  keepCopy: PAID_RUNS_LISTED,
+  moreOptions: SELL_WORDS.moreOptions,
+  // A workflow's listing has no task to hire with guaranteed delivery: it is sold per run.
+  guaranteed: SOLD_PER_RUN,
+  deliveredWithin: SELL_WORDS.deliveredWithin,
+  formDrift: "Buyers see this workflow's form as it is now.",
+  showNewForm: SELL_WORDS.showNewForm,
+  paidTasksUnavailable: SOLD_PER_RUN,
+  copiesInstead: COPIES_NOT_SOLD,
+  copiesDialogTitle: "Copies of a workflow are not sold.",
+  copiesDialogBody: COPIES_NOT_SOLD,
+  copiesDialogScheduled: COPIES_NOT_SOLD,
+  copiesConfirm: SELL_WORDS.copiesConfirm,
+  sellsCopies: COPIES_NOT_SOLD,
+  sellUseInstead: SELL_WORDS.sellUseInstead,
+  putOnSale: SELL_WORDS.putOnSale,
+  saveChanges: SELL_WORDS.saveChanges,
+  stopSelling: SELL_WORDS.stopSelling,
+  describe: "Add one line that tells people what this workflow does.",
+};
+
+/** The words of the question for what is sold. An agent's are SELL_WORDS, exactly. */
+export function sellWordsOf(subject: SellSubject = "agent"): SellWords {
+  return subject === "workflow" ? WORKFLOW_QUESTION_WORDS : SELL_WORDS;
+}
 
 // ============================================
 // Limits
@@ -142,7 +204,12 @@ export function unitWordOfUse(kind: AgentKind | null | undefined): "message" | "
  * a task: Free, Pay per use by the run, Monthly. Runs on its own: Free or
  * Monthly. Token holders is always last, always shown and never selectable.
  */
-export function sellChoices(agentKind: AgentKind | null | undefined, limits: SellLimits = DEFAULT_SELL_LIMITS): SellChoice[] {
+export function sellChoices(
+  agentKind: AgentKind | null | undefined,
+  limits: SellLimits = DEFAULT_SELL_LIMITS,
+  subject: SellSubject = "agent",
+): SellChoice[] {
+  if (subject === "workflow") return workflowChoices(limits);
   const kind = kindOf(agentKind);
   const unit = unitWordOfUse(kind);
   const choices: SellChoice[] = [
@@ -187,6 +254,24 @@ export function sellChoices(agentKind: AgentKind | null | undefined, limits: Sel
     priceHint: null,
   });
   return choices;
+}
+
+/**
+ * The one choice of a workflow: pay per run, with plans under it. The API
+ * sells a workflow per request (one run) at the smallest price per use or
+ * more, and refuses every other way.
+ */
+function workflowChoices(limits: SellLimits): SellChoice[] {
+  return [
+    {
+      id: "per_use",
+      title: "Pay per run",
+      sentence: "People pay for each run from their WheelsAI credits.",
+      selectable: true,
+      priceLabel: `Price per run (minimum ${formatCents(limits.minPerUseCents)})`,
+      priceHint: WORKFLOW_QUESTION_WORDS.perUseHint,
+    },
+  ];
 }
 
 /** The prices a listing that sells copies can have. Every one of them is as it was before use could be sold. */
@@ -253,7 +338,10 @@ export function choicesOf(
   form: Pick<SellForm, "sells">,
   agentKind: AgentKind | null | undefined,
   limits: SellLimits = DEFAULT_SELL_LIMITS,
+  subject: SellSubject = "agent",
 ): SellChoice[] {
+  // A workflow has no copies to sell: its one choice, whatever the form says.
+  if (subject === "workflow") return workflowChoices(limits);
   return form.sells === "copies" ? copyChoices(limits) : sellChoices(agentKind, limits);
 }
 
@@ -328,7 +416,21 @@ const CHOICE_OF_MODEL: Record<string, SellChoiceId> = {
  * longer has for this kind (which the API does not allow) reads as Free, so
  * the form never shows a choice that is not on screen.
  */
-export function formOfListing(listing: SellListing | null | undefined, agentKind?: AgentKind | null): SellForm {
+export function formOfListing(
+  listing: SellListing | null | undefined,
+  agentKind?: AgentKind | null,
+  subject: SellSubject = "agent",
+): SellForm {
+  // A workflow is sold per run and nothing else, so its question is always answered that way.
+  if (subject === "workflow") {
+    return {
+      sells: "use",
+      choice: "per_use",
+      perUsePrice: priceText(listing?.pricePerRequestCents),
+      monthlyPrice: "",
+      allowOutbound: false,
+    };
+  }
   if (!listing) return emptySellForm();
   const sells: SellWhat = listing.sells === "copies" ? "copies" : "use";
   const form: SellForm = {
@@ -360,7 +462,12 @@ export function outboundToolsOf(tools: unknown): string[] {
 export type SellField = "choice" | "perUsePrice" | "monthlyPrice";
 export type SellErrors = Partial<Record<SellField, string>>;
 
-function unitOf(form: Pick<SellForm, "sells" | "choice">, agentKind: AgentKind | null | undefined): string {
+function unitOf(
+  form: Pick<SellForm, "sells" | "choice">,
+  agentKind: AgentKind | null | undefined,
+  subject: SellSubject = "agent",
+): string {
+  if (subject === "workflow") return "run";
   if (form.choice === "monthly") return "month";
   return form.sells === "copies" ? "request" : unitWordOfUse(agentKind);
 }
@@ -391,6 +498,7 @@ export function earningsLine(
   form: SellForm,
   agentKind: AgentKind | null | undefined,
   limits?: SellLimits,
+  subject: SellSubject = "agent",
 ): string | null {
   const cents = priceCentsOf(form);
   if (cents === null || cents <= 0) return null;
@@ -402,7 +510,7 @@ export function earningsLine(
   }
   const { grossCents, creatorCents } = splitCents(cents);
   if (grossCents !== cents) return null;
-  return `At ${formatCents(grossCents)} a ${unitOf(form, agentKind)} you earn ${formatCents(creatorCents)}.`;
+  return `At ${formatCents(grossCents)} a ${unitOf(form, agentKind, subject)} you earn ${formatCents(creatorCents)}.`;
 }
 
 // ============================================
@@ -430,8 +538,9 @@ export function buildSellSave(
   form: SellForm,
   agent: { agentKind?: AgentKind | null; tools?: unknown },
   limits: SellLimits = DEFAULT_SELL_LIMITS,
+  subject: SellSubject = "agent",
 ): SellSaveResult {
-  const choices = choicesOf(form, agent.agentKind, limits);
+  const choices = choicesOf(form, agent.agentKind, limits, subject);
   const choice = choices.find((candidate) => candidate.id === form.choice);
   if (!choice || !choice.selectable) {
     const names = choices.filter((candidate) => candidate.selectable).map((candidate) => candidate.title);
@@ -439,14 +548,17 @@ export function buildSellSave(
     return { ok: false, errors: { choice: `Choose ${names.length > 0 ? `${names.join(", ")} or ${last}` : last}.` } };
   }
 
+  // A workflow sells use and has no tools to allow: the API refuses a workflow listing that names any.
   const base: Pick<SellSave, "sells" | "allowedTools"> =
-    form.sells === "use"
-      ? { sells: "use", allowedTools: form.allowOutbound ? outboundToolsOf(agent.tools) : [] }
-      : { sells: "copies" };
+    subject === "workflow"
+      ? { sells: "use" }
+      : form.sells === "use"
+        ? { sells: "use", allowedTools: form.allowOutbound ? outboundToolsOf(agent.tools) : [] }
+        : { sells: "copies" };
 
   if (form.choice === "per_use") {
-    const min = form.sells === "copies" ? MIN_COPY_REQUEST_CENTS : limits.minPerUseCents;
-    const price = checkPrice(form.perUsePrice, unitOf(form, agent.agentKind), min, MAX_PRICE_PER_USE_CENTS);
+    const min = form.sells === "copies" && subject !== "workflow" ? MIN_COPY_REQUEST_CENTS : limits.minPerUseCents;
+    const price = checkPrice(form.perUsePrice, unitOf(form, agent.agentKind, subject), min, MAX_PRICE_PER_USE_CENTS);
     if ("message" in price) return { ok: false, errors: { perUsePrice: price.message } };
     return { ok: true, save: { ...base, pricingModel: "per_request", pricePerRequestCents: price.cents } };
   }
@@ -463,8 +575,9 @@ export function sellProblem(
   form: SellForm,
   agent: { agentKind?: AgentKind | null; tools?: unknown },
   limits: SellLimits = DEFAULT_SELL_LIMITS,
+  subject: SellSubject = "agent",
 ): string | null {
-  const built = buildSellSave(form, agent, limits);
+  const built = buildSellSave(form, agent, limits, subject);
   if (built.ok) return null;
   return built.errors.choice ?? built.errors.perUsePrice ?? built.errors.monthlyPrice ?? null;
 }

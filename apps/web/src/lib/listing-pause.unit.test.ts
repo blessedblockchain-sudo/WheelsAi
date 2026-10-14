@@ -21,6 +21,9 @@ import {
   stopWarning,
   stopWarningLead,
   stopWarningOnSale,
+  stopWarningOffSaleWorkflows,
+  stopWarningWorkflowLead,
+  stopWarningWorkflows,
 } from "./listing-pause";
 import { PAID_REFUSAL_RULES, paidRefusalNotice } from "./paid-use";
 
@@ -114,6 +117,117 @@ test("when the agents cannot be read the dialog still opens, says so, and keeps 
     });
   }
   assert.equal(STOP_WARNING_WORDS.cancel, "Keep it running");
+});
+
+// ============================================
+// The workflows on sale that need the deployment
+// ============================================
+
+type WorkflowDependent = NonNullable<DeploymentDependents["workflows"]>[number];
+const workflow = (name: string, onSale = true, renewalGraceDays = 3): WorkflowDependent => ({
+  id: `wf-${name}`,
+  name,
+  onSale,
+  listing: { id: `l-${name}`, title: `${name} listing`, subscribers: 2 },
+  renewalGraceDays,
+});
+
+const ONE_WORKFLOW =
+  "On sale: the workflow Weekly report. It cannot run while this deployment is stopped: people who pay for it are refused and nobody is charged. A plan that comes due is not charged while it cannot run, and ends if that lasts three days. The days already paid for keep counting.";
+const TWO_WORKFLOWS =
+  "On sale: the workflows Weekly report, Triage. They cannot run while this deployment is stopped: people who pay for them are refused and nobody is charged. A plan that comes due is not charged while they cannot run, and ends if that lasts three days. The days already paid for keep counting.";
+
+test("the sentence about the workflows on sale, with one name or several; none for none", () => {
+  assert.equal(stopWarningWorkflows([]), null);
+  assert.equal(stopWarningWorkflows(["Weekly report"], 3), ONE_WORKFLOW);
+  assert.equal(stopWarningWorkflows(["Weekly report", "Triage"], 3), TWO_WORKFLOWS);
+  // The days come from the API's answer, never typed here; a number that cannot be read is left out.
+  assert.match(stopWarningWorkflows(["A"], 1) ?? "", /ends if that lasts one day\./);
+  assert.match(stopWarningWorkflows(["A"], 14) ?? "", /ends if that lasts 14 days\./);
+  assert.equal(
+    stopWarningWorkflows(["A"], null),
+    "On sale: the workflow A. It cannot run while this deployment is stopped: people who pay for it are refused and nobody is charged. A plan that comes due is not charged while it cannot run. The days already paid for keep counting.",
+  );
+  assert.equal(stopWarningWorkflows(["A"], 2.5), stopWarningWorkflows(["A"], null));
+});
+
+test("the three days are the API's days of grace after a plan's period", () => {
+  const api = readFileSync(join(here, "../../../api/src/services/subscriptionAccess.ts"), "utf8");
+  const days = Number(/export const PAST_DUE_GRACE_DAYS = (\d+);/.exec(api)?.[1]);
+  assert.equal(days, 3);
+  assert.equal(stopWarningWorkflows(["Weekly report"], days), ONE_WORKFLOW);
+  // The dependents' read says them as renewalGraceDays, from that constant.
+  const read = readFileSync(join(here, "../../../api/src/services/deploymentDependents.ts"), "utf8");
+  assert.match(read, /renewalGraceDays: PAST_DUE_GRACE_DAYS/);
+});
+
+test("only workflows need the deployment: the dialog still opens, with their lead and their sentence", () => {
+  assert.deepEqual(stopWarning({ agents: [], workflows: [workflow("Weekly report")] }), {
+    title: "Stop this deployment?",
+    lead: "1 workflow you sell runs on this deployment and cannot run until you deploy this model again.",
+    names: [],
+    onSale: null,
+    workflows: ONE_WORKFLOW,
+    confirmLabel: "Stop deployment",
+    cancelLabel: "Keep it running",
+  });
+  const two = stopWarning({ agents: [], workflows: [workflow("Weekly report"), workflow("Triage")] });
+  assert.equal(two?.lead, "2 workflows you sell run on this deployment and cannot run until you deploy this model again.");
+  assert.equal(two?.workflows, TWO_WORKFLOWS);
+  assert.equal(stopWarningWorkflowLead(1), "1 workflow you sell runs on this deployment and cannot run until you deploy this model again.");
+});
+
+const OFF_SALE_ONE =
+  "No longer on sale, with plans still running: the workflow Triage. People on a plan are refused while it cannot run, and nobody is charged. Their plans end when the 30 days they paid for end.";
+
+test("a workflow taken off sale with a plan still running is named in its own sentence, never said to be on sale", () => {
+  // Its plans end at their period's end whatever it can do, so neither "On sale" nor the days of grace hold for it.
+  const mixed = stopWarning({ agents: [], workflows: [workflow("Weekly report"), workflow("Triage", false)] });
+  assert.equal(mixed?.lead, "2 workflows you sell run on this deployment and cannot run until you deploy this model again.");
+  assert.equal(mixed?.workflows, `${ONE_WORKFLOW} ${OFF_SALE_ONE}`);
+  // Only such workflows: the dialog opens with the lead and their own sentence, and nothing about a sale.
+  assert.deepEqual(stopWarning({ agents: [], workflows: [workflow("Triage", false)] }), {
+    title: "Stop this deployment?",
+    lead: "1 workflow you sell runs on this deployment and cannot run until you deploy this model again.",
+    names: [],
+    onSale: null,
+    workflows: OFF_SALE_ONE,
+    confirmLabel: "Stop deployment",
+    cancelLabel: "Keep it running",
+  });
+  assert.equal(
+    stopWarningOffSaleWorkflows(["Triage", "Digest"]),
+    "No longer on sale, with plans still running: the workflows Triage, Digest. People on a plan are refused while they cannot run, and nobody is charged. Their plans end when the 30 days they paid for end.",
+  );
+  assert.equal(stopWarningOffSaleWorkflows([]), null);
+  // Beside agents, their warning is what it was and the workflow's sentence follows it.
+  const agentsOnly = stopWarning({ agents: [agent("Support Bot", true)] });
+  assert.deepEqual(stopWarning({ agents: [agent("Support Bot", true)], workflows: [workflow("Triage", false)] }), { ...agentsOnly, workflows: OFF_SALE_ONE });
+});
+
+test("with agents too, their lead, names and on-sale sentence are what they were, and the workflows' follows", () => {
+  const agentsOnly = stopWarning({ agents: [agent("Support Bot", true), agent("Researcher")] });
+  const both = stopWarning({ agents: [agent("Support Bot", true), agent("Researcher")], workflows: [workflow("Weekly report")] });
+  assert.deepEqual(both, { ...agentsOnly, workflows: ONE_WORKFLOW });
+  assert.equal(both?.lead, agentsOnly?.lead);
+  assert.deepEqual(both?.names, ["Support Bot", "Researcher"]);
+  assert.equal(both?.onSale, agentsOnly?.onSale);
+});
+
+test("an answer with no workflows, or an empty list, is read as none", () => {
+  assert.equal(stopWarning({ agents: [], workflows: [] }), null);
+  assert.equal(stopWarning({ agents: [] }), null);
+  assert.equal(stopWarning({ agents: [], workflows: "x" } as unknown as DeploymentDependents), null);
+  const agents = stopWarning({ agents: [agent("Support Bot")] });
+  assert.equal(agents !== null && "workflows" in agents, false);
+  // A workflow with a blank name is still named.
+  assert.match(stopWarning({ agents: [], workflows: [workflow("  ")] })?.workflows ?? "", /the workflow Unnamed workflow\./);
+});
+
+test("the workflows' sentences have no em dash", () => {
+  for (const sentence of [ONE_WORKFLOW, TWO_WORKFLOWS, stopWarningWorkflowLead(1), stopWarningWorkflowLead(3)]) {
+    assert.doesNotMatch(sentence, /[\u2013\u2014]/, sentence);
+  }
 });
 
 // ============================================

@@ -5,11 +5,18 @@
  * copy, and this file answers exactly what the page said before use could be
  * sold. Use: the buyer uses the creator's agent on its page, `/a/<handle>`,
  * and never gets a copy; the card says so, names the price with its unit and
- * opens that page.
+ * opens that page. A workflow's listing sells use too, by the run, and opens
+ * its own page, `/w/<listing slug>`, in a workflow's words.
  *
  * Pure: no IO, no React. The page draws what this returns.
  */
-import type { MarketplaceInstallAccess, MarketplaceInstallKind, MarketplaceListing } from "./api";
+import {
+  productKindOf,
+  type MarketplaceInstallAccess,
+  type MarketplaceInstallKind,
+  type MarketplaceListing,
+  type MarketplaceProductKind,
+} from "./api";
 import { formatCents } from "./agent-page";
 
 type ListingPricing = Pick<
@@ -26,6 +33,61 @@ export const LISTING_USE_WORDS = {
   free: "Free to use on its page.",
   people: "People using it",
 } as const;
+
+/** The words of the listing page for a listing that sells a workflow. */
+export const LISTING_WORKFLOW_WORDS = {
+  button: "Use this workflow",
+  footnote: "You use this workflow on its page. You do not get a copy.",
+  inUse: "You use this workflow.",
+  open: "Open",
+  /** The chip a card and the listing page show in place of an agent's framework. */
+  chip: "Workflow",
+  reviewsEmpty: "Be the first to review this workflow.",
+} as const;
+
+/** What a listing sells, as a card or the listing page needs to know it. */
+type ListingKindLike = { productKind?: MarketplaceProductKind; agentId?: string | null };
+
+/** The chip beside a listing's counts: "Workflow" for a workflow, else the agent's framework ("custom" when none). */
+export function listingChipText(listing: ListingKindLike & { agent?: { framework?: string | null } | null }): string {
+  if (productKindOf(listing) === "workflow") return LISTING_WORKFLOW_WORDS.chip;
+  return listing.agent?.framework || "custom";
+}
+
+/**
+ * The parts of the listing page that are about an agent. A workflow's
+ * listing has none of them: no Try it tab, no Hire tab, no tags, no token, no
+ * transparency link, no framework and no publisher card. An agent's listing
+ * keeps every part it had, each still drawn only when it has something to
+ * show.
+ */
+export interface ListingPageParts {
+  kind: MarketplaceProductKind;
+  hire: boolean;
+  tryIt: boolean;
+  tags: boolean;
+  token: boolean;
+  transparency: boolean;
+  framework: boolean;
+  publisher: boolean;
+  /** Said when the listing has no review yet. */
+  reviewsEmpty: string;
+}
+
+export function listingPageParts(listing: ListingKindLike): ListingPageParts {
+  const workflow = productKindOf(listing) === "workflow";
+  return {
+    kind: workflow ? "workflow" : "agent",
+    hire: !workflow,
+    tryIt: !workflow,
+    tags: !workflow,
+    token: !workflow,
+    transparency: !workflow,
+    framework: !workflow,
+    publisher: !workflow,
+    reviewsEmpty: workflow ? LISTING_WORKFLOW_WORDS.reviewsEmpty : "Be the first to review this agent.",
+  };
+}
 
 /** "message" or "run": what one paid use of this listing is called. */
 export function unitWordOfUse(unit: MarketplaceListing["unit"]): "message" | "run" | "use" {
@@ -111,7 +173,7 @@ export interface ListingCtaInstall {
 }
 
 export interface ListingCtaInput {
-  listing: ListingPricing & { slug: string; agent?: { handle?: string | null } };
+  listing: ListingPricing & ListingKindLike & { slug: string; agent?: { handle?: string | null } };
   authed: boolean;
   /** null while it is loading, and for someone signed out. */
   install: ListingCtaInstall | null;
@@ -154,8 +216,11 @@ export function usesAgent(install: ListingCtaInstall | null): boolean {
 
 function ctaForUse(input: ListingCtaInput): ListingCta {
   const { listing, authed, install } = input;
-  const handle = listing.agent?.handle ?? null;
-  const page = handle ? `/a/${handle}` : null;
+  const workflow = productKindOf(listing) === "workflow";
+  // A workflow is used on its own page, by the listing's slug; an agent on its page, by its handle.
+  const handle = workflow ? null : (listing.agent?.handle ?? null);
+  const page = workflow ? (listing.slug ? `/w/${listing.slug}` : null) : handle ? `/a/${handle}` : null;
+  const words = workflow ? LISTING_WORKFLOW_WORDS : LISTING_USE_WORDS;
   const free = listing.pricingModel === "free";
 
   let price = priceTextForUse(listing);
@@ -180,14 +245,15 @@ function ctaForUse(input: ListingCtaInput): ListingCta {
     price,
     priceIsFree: free,
     priceNote,
-    status: inUse ? LISTING_USE_WORDS.inUse : null,
+    status: inUse ? words.inUse : null,
     button: page
       ? inUse
-        ? { type: "link", label: LISTING_USE_WORDS.open, href: page, tone: "success", icon: "check" }
-        : { type: "link", label: LISTING_USE_WORDS.button, href: page, tone: "primary", icon: "play" }
+        ? { type: "link", label: words.open, href: page, tone: "success", icon: "check" }
+        : { type: "link", label: words.button, href: page, tone: "primary", icon: "play" }
       : null,
-    secondary: copyId ? { label: "Open your copy", href: `/dashboard/agents/${copyId}` } : null,
-    footnote: LISTING_USE_WORDS.footnote,
+    // A workflow is never sold as a copy, so there is no copy to open.
+    secondary: copyId && !workflow ? { label: "Open your copy", href: `/dashboard/agents/${copyId}` } : null,
+    footnote: words.footnote,
   };
 }
 
@@ -273,6 +339,8 @@ function copiesCta(input: ListingCtaInput): ListingCta {
 
 /** The price card of a listing page: its price, its lines and its button. */
 export function listingCta(input: ListingCtaInput): ListingCta {
+  // A workflow sells use and nothing else, whatever a row may carry.
+  if (productKindOf(input.listing) === "workflow") return ctaForUse(input);
   return input.listing.sells === "use" ? ctaForUse(input) : copiesCta(input);
 }
 

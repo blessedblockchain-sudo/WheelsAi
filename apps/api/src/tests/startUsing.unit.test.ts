@@ -46,6 +46,8 @@ function makeWorld(opts: {
   const state = {
     listing: {
       id: LISTING_ID,
+      agentId: "agent_src",
+      slug: "research-analyst",
       title: "Research Analyst",
       publisherId: PUBLISHER,
       status: opts.listingStatus ?? "published",
@@ -965,9 +967,12 @@ test("POST /listings/:id/use answers 201 with the state, and 200 when already us
   const world = makeWorld({ pricingModel: "monthly", monthlyPriceCents: 900n });
   const first = await post(world, OWNER, USE_URL, { expected: monthly(900) });
   assert.equal(first.status, 201);
-  assert.deepEqual(Object.keys(first.body).sort(), ["acceptedPricing", "access", "agent", "subscription"]);
+  assert.deepEqual(Object.keys(first.body).sort(), ["acceptedPricing", "access", "agent", "productKind", "slug", "subscription"]);
   assert.equal(first.body.access, "subscribed");
   assert.deepEqual(first.body.agent, AGENT);
+  // What the listing sells, and the listing's own slug.
+  assert.equal(first.body.productKind, "agent");
+  assert.equal(first.body.slug, "research-analyst");
   assert.equal(first.body.acceptedPricing.pricingModel, "monthly");
   assert.equal(first.body.subscription.priceCents, 900);
   assert.doesNotMatch(JSON.stringify(first.body), /secret analyst|http_request/);

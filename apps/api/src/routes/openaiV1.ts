@@ -114,7 +114,8 @@ export interface UsedAgentRow {
     sells: string;
     pricingModel: string;
     pricePerRequestCents: bigint | null;
-    agent: { publicHandle: string | null };
+    /** null when the listing sells a workflow. */
+    agent: { publicHandle: string | null } | null;
   };
 }
 
@@ -149,7 +150,9 @@ export function usedAgentsOf(
   const subs = new Map(subscriptions.map((sub) => [sub.listingId, sub]));
   const used: Array<{ handle: string; createdAt: Date }> = [];
   for (const licence of licences) {
-    const handle = licence.listing.agent.publicHandle;
+    // A licence for a workflow's listing has no agent and is not an agent
+    // to list: skipped here, never a reason to fail the whole list.
+    const handle = licence.listing.agent?.publicHandle;
     if (!handle) continue;
     const access = useAccess(
       {

@@ -116,7 +116,12 @@ export function buildPaidUseDeps(): PaidUseDeps {
 
     // An agent has at most one listing. Read in any state: a paid month
     // outlives a listing that stopped selling.
-    loadListing: (agentId) => prisma.agentListing.findUnique({ where: { agentId }, select: USE_LISTING_COLUMNS }),
+    // The row was found by its agent, so it is an agent's listing; one with
+    // no agent is not this agent's and is answered as no listing.
+    loadListing: async (agentId) => {
+      const listing = await prisma.agentListing.findUnique({ where: { agentId }, select: USE_LISTING_COLUMNS });
+      return listing && listing.agentId !== null ? { ...listing, agentId: listing.agentId } : null;
+    },
 
     loadLicence: async ({ listingId, buyerId }) => {
       const [licence, sub] = await Promise.all([

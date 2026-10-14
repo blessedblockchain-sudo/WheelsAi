@@ -128,7 +128,8 @@ export function agentTokenCreateData(
   };
 }
 
-async function persistAgentTokenWithTreasury(
+// Exported for its test only.
+export async function persistAgentTokenWithTreasury(
   input: PersistAgentTokenWithTreasuryInput,
 ): Promise<PersistAgentTokenWithTreasuryResult> {
   return prisma.$transaction(async (tx) => {
@@ -149,9 +150,18 @@ async function persistAgentTokenWithTreasury(
         `persistAgentTokenWithTreasury: AgentListing ${input.agentListingId} not found`,
       );
     }
-    if (listing.agent.orgId !== input.orgId) {
+    // A token belongs to an agent's listing. A listing that sells a workflow
+    // has no agent to check the caller's organization against, so nothing is
+    // written for it.
+    const agent = listing.agent;
+    if (!agent) {
       throw new Error(
-        `persistAgentTokenWithTreasury: listing's agent.orgId ${listing.agent.orgId} does not match input.orgId ${input.orgId}`,
+        `persistAgentTokenWithTreasury: AgentListing ${input.agentListingId} has no agent; a token is launched for an agent's listing only`,
+      );
+    }
+    if (agent.orgId !== input.orgId) {
+      throw new Error(
+        `persistAgentTokenWithTreasury: listing's agent.orgId ${agent.orgId} does not match input.orgId ${input.orgId}`,
       );
     }
     const created = await tx.agentToken.create({

@@ -297,19 +297,23 @@ export async function getListingTrialPreview(slug: string) {
     },
   });
   if (!listing) return null;
+  // Try it is a few free messages with the listing's agent. A listing that
+  // sells a workflow has no agent to try, so it has no Try it panel.
+  const agent = listing.agent;
+  if (!agent) return null;
 
   const modelConfig =
-    typeof listing.agent.modelConfig === "object" && listing.agent.modelConfig !== null
-      ? (listing.agent.modelConfig as Record<string, unknown>)
+    typeof agent.modelConfig === "object" && agent.modelConfig !== null
+      ? (agent.modelConfig as Record<string, unknown>)
       : {};
-  const tools = Array.isArray(listing.agent.tools) ? (listing.agent.tools as unknown[]) : [];
+  const tools = Array.isArray(agent.tools) ? (agent.tools as unknown[]) : [];
   return {
     id: listing.id,
-    agentEntrypoint: listing.agent.entrypoint,
-    agentKind: isAgentKind(listing.agent.agentKind) ? listing.agent.agentKind : DEFAULT_AGENT_KIND,
+    agentEntrypoint: agent.entrypoint,
+    agentKind: isAgentKind(agent.agentKind) ? agent.agentKind : DEFAULT_AGENT_KIND,
     // The task form is made from this by the caller (publicTaskForm); the
     // rest of it goes nowhere.
-    agentKindConfig: listing.agent.kindConfig,
+    agentKindConfig: agent.kindConfig,
     // Resolved to a model id by the caller, with the rule agent chat uses.
     agentModelConfig: modelConfig,
     agentTools: tools
@@ -612,6 +616,21 @@ export async function getPublisherProfile(slug: string) {
 // ============================================
 // Listing Management (Protected)
 // ============================================
+
+/** What a listing sells. The word an offering already uses for it. */
+export type ListingProductKind = "agent" | "workflow";
+
+/**
+ * Which of the two a listing row sells. A row that names a workflow, or has
+ * no agent, is a workflow's listing: it is never read as an agent's, so
+ * nothing invents an agent, a unit or a page for it.
+ */
+export function listingProductKind(listing: {
+  agentId?: string | null;
+  orchestrationId?: string | null;
+}): ListingProductKind {
+  return listing.agentId === null || (listing.orchestrationId ?? null) !== null ? "workflow" : "agent";
+}
 
 /** The agent columns every listing answer is drawn from. Never its instructions or its tools. */
 /**
@@ -940,6 +959,13 @@ export async function updateListing(
   if (!listing) {
     throw new Error("Listing not found or you don't have permission to edit");
   }
+  // Everything below is the edit of an AGENT's listing: its sale rules and
+  // its page. A listing that sells a workflow has neither, and must never be
+  // checked or published as if it were a chat agent, so it is not found here.
+  const agentId = listing.agentId;
+  if (listingProductKind(listing) !== "agent" || agentId === null) {
+    throw new Error("Listing not found or you don't have permission to edit");
+  }
 
   // Pricing is validated as a whole: the model that results from this
   // edit must have the price it needs, and drops the ones it doesn't.
@@ -978,8 +1004,8 @@ export async function updateListing(
     pricePerRequestCents: pricing ? pricing.pricePerRequestCents : listing.pricePerRequestCents,
     monthlyPriceCents: pricing ? pricing.monthlyPriceCents : listing.monthlyPriceCents,
   };
-  const agent: SellableAgent = listing.agent ?? { id: listing.agentId };
-  if (params.sells !== undefined && params.sells !== listing.sells && (await isMarketplaceCopy(listing.agentId))) {
+  const agent: SellableAgent = listing.agent ?? { id: agentId };
+  if (params.sells !== undefined && params.sells !== listing.sells && (await isMarketplaceCopy(agentId))) {
     throw new ListingError(409, "marketplace_copy", LISTING_MESSAGES.marketplaceCopy);
   }
   if (pricingTouched || params.sells !== undefined || params.publish) assertSellable(agent, next);
@@ -1044,12 +1070,12 @@ export async function updateListing(
         // The sale rules, on the terms that are on sale once this commits and
         // on the agent as it is now: it may have changed since the read above.
         const agentNow: SellableAgent =
-          (await tx.agent.findFirst({ where: { id: listing.agentId, orgId }, select: SELLABLE_AGENT_COLUMNS })) ?? agent;
+          (await tx.agent.findFirst({ where: { id: agentId, orgId }, select: SELLABLE_AGENT_COLUMNS })) ?? agent;
         assertSellable(agentNow, saved);
         if (saved.sells !== "use") return saved;
         await applyUsePage(tx, {
           orgId,
-          agentId: listing.agentId,
+          agentId,
           agentKind: agentNow.agentKind,
           paid: isPaidUse(saved),
           results: wasFreeUse ? "keep" : "set",
@@ -1091,6 +1117,13 @@ async function publishOwnListing(listingId: string, orgId: string): Promise<bool
   if (!listing) {
     throw new Error("Listing not found");
   }
+  // Publishing below is the publishing of an AGENT's listing: the agent's
+  // sale rules, then the agent's page. A listing that sells a workflow is
+  // not found here, so neither is ever applied to it.
+  const agentId = listing.agentId;
+  if (listingProductKind(listing) !== "agent" || agentId === null) {
+    throw new Error("Listing not found");
+  }
 
   if (listing.status === "published") return false;
 
@@ -1100,7 +1133,7 @@ async function publishOwnListing(listingId: string, orgId: string): Promise<bool
   }
 
   // The agent may have changed since the draft was saved.
-  const agent: SellableAgent = listing.agent ?? { id: listing.agentId };
+  const agent: SellableAgent = listing.agent ?? { id: agentId };
   assertSellable(agent, listing);
 
   const published = await inPageTransaction(async (tx) => {
@@ -1127,7 +1160,7 @@ async function publishOwnListing(listingId: string, orgId: string): Promise<bool
     if (onSale.sells === "use") {
       await applyUsePage(tx, {
         orgId,
-        agentId: onSale.agentId,
+        agentId,
         agentKind: agentNow.agentKind,
         paid: isPaidUse(onSale),
         results: "set",
@@ -1279,6 +1312,9 @@ export async function setListingPlans(
 function formatListingForOwner(listing: any) {
   return {
     ...formatListingForPublic(listing),
+    // The workflow a listing sells, for its publisher only: no read anyone
+    // can make says it. null on an agent's listing.
+    orchestrationId: listing.orchestrationId ?? null,
     allowedTools: Array.isArray(listing.useAllowedTools) ? (listing.useAllowedTools as string[]) : [],
   };
 }
@@ -1298,13 +1334,23 @@ function formatListingForPublic(
   listing: any,
   said: { plans?: PlanOffer[]; plansFromCents?: number | null; freeTrial?: TrialOffer | null } = {},
 ) {
+  const productKind = listingProductKind(listing);
   // What one payment buys, for a listing that sells use at a price. A
-  // listing that sells copies, or use for free, has no unit.
+  // listing that sells copies, or use for free, has no unit. A workflow is
+  // sold by the run, said here and never worked out from the kind of an
+  // agent it does not have.
   const unit: UseUnit | null =
-    listing.sells === "use" && isPaidUse(listing) ? useUnitOf(listing.agent?.agentKind, listing.pricingModel) : null;
+    productKind === "workflow"
+      ? "run"
+      : listing.sells === "use" && isPaidUse(listing)
+        ? useUnitOf(listing.agent?.agentKind, listing.pricingModel)
+        : null;
   return {
     id: listing.id,
-    agentId: listing.agentId,
+    // What the listing sells: an agent or a workflow. agentId is null on a
+    // workflow's listing.
+    productKind,
+    agentId: productKind === "workflow" ? null : listing.agentId,
     title: listing.title,
     slug: listing.slug,
     shortDescription: listing.shortDescription,
@@ -1363,6 +1409,9 @@ function formatListingForPublic(
           isPublic: listing.agent.isPublic,
         }
       : undefined,
+    // A listing that sells a workflow has no agent: none to try, and none to
+    // show, whatever the row carries.
+    ...(productKind === "workflow" && { trial: { enabled: false }, agent: undefined }),
   };
 }
 
@@ -1813,6 +1862,14 @@ export async function installAgent(
     throw new InstallRefusedError("sells_use", INSTALL_MESSAGES.sellsUse, listing.agent?.publicHandle ?? null);
   }
 
+  // A copy is a copy of the listing's agent. Only use of a workflow is sold,
+  // so a listing with no agent was refused above; one that got here anyway
+  // has nothing to copy.
+  const source = listing.agent;
+  if (!source) {
+    throw new Error("This agent is not available for installation");
+  }
+
   // Check if already installed
   const existingInstall = await prisma.agentInstall.findUnique({
     where: {
@@ -1894,29 +1951,29 @@ export async function installAgent(
       ? await tx.agent.findFirst({ where: { id: existingInstall.clonedAgentId, orgId: buyerId } })
       : null;
 
-    const behaviour = cloneAgentBehaviour(listing.agent);
-    const kind = cloneAgentKind(listing.agent);
+    const behaviour = cloneAgentBehaviour(source);
+    const kind = cloneAgentKind(source);
     const clonedAgent =
       previousClone ??
       (await tx.agent.create({
         data: {
           orgId: buyerId,
-          name: `${listing.agent.name} (Marketplace)`,
-          slug: `${listing.agent.slug}-${Date.now()}`,
-          description: listing.agent.description,
-          framework: listing.agent.framework,
-          systemPrompt: listing.agent.systemPrompt,
-          tools: listing.agent.tools as any,
-          modelConfig: listing.agent.modelConfig as any,
-          sourceType: listing.agent.sourceType,
-          sourceUrl: listing.agent.sourceUrl,
-          sourceCode: listing.agent.sourceCode,
+          name: `${source.name} (Marketplace)`,
+          slug: `${source.slug}-${Date.now()}`,
+          description: source.description,
+          framework: source.framework,
+          systemPrompt: source.systemPrompt,
+          tools: source.tools as any,
+          modelConfig: source.modelConfig as any,
+          sourceType: source.sourceType,
+          sourceUrl: source.sourceUrl,
+          sourceCode: source.sourceCode,
           // Never copy the publisher's secrets (provider keys, bot tokens)
           // into the buyer's org. The clone starts with no variables; buyers
           // set their own keys.
-          version: listing.agent.version,
+          version: source.version,
           isPublic: false,
-          tags: listing.agent.tags,
+          tags: source.tags,
           // The copy answers the way the original does: through its graph
           // when that is its entrypoint (see marketplaceClone.ts).
           entrypoint: behaviour.entrypoint,
@@ -2043,11 +2100,33 @@ export interface LicenceAgent {
   agentKind: string;
 }
 
-function licenceAgentOf(agent: { publicHandle?: string | null; name?: string | null; agentKind?: string | null } | null | undefined): LicenceAgent {
+/**
+ * null for a listing with no agent (it sells a workflow): a licence for a
+ * workflow is never answered with a nameless agent, which would send its
+ * buyer to a page that does not exist.
+ */
+function licenceAgentOf(agent: { publicHandle?: string | null; name?: string | null; agentKind?: string | null } | null | undefined): LicenceAgent | null {
+  if (!agent) return null;
   return {
-    handle: agent?.publicHandle ?? null,
-    name: agent?.name ?? "",
-    agentKind: isAgentKind(agent?.agentKind) ? agent.agentKind : DEFAULT_AGENT_KIND,
+    handle: agent.publicHandle ?? null,
+    name: agent.name ?? "",
+    agentKind: isAgentKind(agent.agentKind) ? agent.agentKind : DEFAULT_AGENT_KIND,
+  };
+}
+
+/** What a licence is for, by the listing it is on: which product, under which slug, and the agent if it is one. */
+function licenceProductOf(listing: {
+  slug: string;
+  agentId?: string | null;
+  orchestrationId?: string | null;
+  agent?: Parameters<typeof licenceAgentOf>[0];
+}): { productKind: ListingProductKind; slug: string; agent: LicenceAgent | null } {
+  const productKind = listingProductKind(listing);
+  return {
+    productKind,
+    // The listing's slug: a workflow is used at /w/<slug>.
+    slug: listing.slug,
+    agent: productKind === "agent" ? licenceAgentOf(listing.agent) : null,
   };
 }
 
@@ -2057,7 +2136,11 @@ export interface UseState {
   /** What the buyer agreed to. null when there is no licence (free use needs none). */
   acceptedPricing: { pricingModel: string | null; pricePerRequestCents: number | null; acceptedAt: Date | null } | null;
   subscription: ReturnType<typeof formatSubscription> | null;
-  agent: LicenceAgent;
+  /** What the listing sells, and the listing's slug. */
+  productKind: ListingProductKind;
+  slug: string;
+  /** null when the listing sells a workflow. */
+  agent: LicenceAgent | null;
 }
 
 // orgId and modelConfig are read to ask whether the listing is paused.
@@ -2083,6 +2166,9 @@ export async function readUseState(
     sells: string;
     pricingModel: string;
     pricePerRequestCents: bigint | null;
+    slug: string;
+    agentId?: string | null;
+    orchestrationId?: string | null;
     agent: Parameters<typeof licenceAgentOf>[0];
   },
   buyerId: string,
@@ -2123,7 +2209,7 @@ export async function readUseState(
         }
       : null,
     subscription: sub ? formatSubscription(sub, listing) : null,
-    agent: licenceAgentOf(listing.agent),
+    ...licenceProductOf(listing),
   };
 }
 
@@ -2500,8 +2586,9 @@ export async function getMyInstalls(buyerId: string) {
       // copy. "copy": their own copy, clonedAgentId.
       kind,
       clonedAgentId: install.clonedAgentId ?? null,
-      // The agent the licence is for. For "use" this is where it is used.
-      agent: licenceAgentOf(install.listing.agent),
+      // What the licence is for: the agent, which for "use" is where it is
+      // used, or a workflow, with no agent and the listing's slug.
+      ...licenceProductOf(install.listing),
       status: install.status,
       totalRequests: Number(install.totalRequests),
       totalSpentCents: Number(install.totalSpentCents),
@@ -2721,7 +2808,7 @@ export async function checkInstallStatus(listingId: string, buyerId: string) {
           status: install.status,
           kind,
           clonedAgentId: install.clonedAgentId ?? null,
-          agent: licenceAgentOf(install.listing.agent),
+          ...licenceProductOf(install.listing),
           access: licenceAccess(
             kind,
             install.status,

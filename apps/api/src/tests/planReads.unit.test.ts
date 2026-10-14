@@ -456,7 +456,9 @@ test("an install says when what ended was the buyer's own free trial, and only t
   // The word stands beside the access, and nothing else of the row moved.
   const keys = Object.keys(await rowOf(trial));
   assert.equal(keys[keys.indexOf("access") + 1], "trialEnded");
-  assert.equal(keys.length, 14);
+  // Sixteen since a licence says what its listing sells and the listing's slug.
+  assert.equal(keys.length, 16);
+  assert.deepEqual(keys.slice(keys.indexOf("clonedAgentId") + 1, keys.indexOf("status")), ["productKind", "slug", "agent"]);
 });
 
 test("a buyer's subscriptions carry the same plan, and a month has none", async () => {

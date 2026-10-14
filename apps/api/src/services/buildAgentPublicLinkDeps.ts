@@ -65,7 +65,12 @@ export function buildAgentPublicLinkDeps(options: BuildAgentPublicLinkDepsOption
       updateMany: (args) => prisma.widgetKey.updateMany(args),
     },
     agentListing: {
-      findFirst: (args) => prisma.agentListing.findFirst(args),
+      // The row was found by its agent, so it is an agent's listing; one
+      // with no agent is not this agent's and is answered as no listing.
+      findFirst: async (args) => {
+        const listing = await prisma.agentListing.findFirst(args);
+        return listing && listing.agentId !== null ? { ...listing, agentId: listing.agentId } : null;
+      },
     },
   };
   return {

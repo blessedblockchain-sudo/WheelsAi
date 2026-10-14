@@ -98,6 +98,9 @@ export interface HolderData {
 // Eligibility Checks
 // ============================================
 
+/** What asking for a token on a listing that sells a workflow is answered with. */
+export const TOKEN_AGENT_LISTING_ONLY_MESSAGE = "A token can be launched for an agent's listing only.";
+
 /**
  * Check if an agent listing is eligible for token creation
  *
@@ -152,6 +155,15 @@ export async function checkTokenEligibility(
       return { eligible: false, reasons };
     }
 
+    // A token is launched for an agent: its deployments and its payments are
+    // what the gate below reads. A listing that sells a workflow has none of
+    // them, so the answer is no before anything of an agent is read.
+    const agent = listing.agent;
+    if (!agent) {
+      reasons.push(TOKEN_AGENT_LISTING_ONLY_MESSAGE);
+      return { eligible: false, reasons };
+    }
+
     // Check if token already exists
     const existingToken = await prisma.agentToken.findUnique({
       where: { agentListingId },
@@ -167,7 +179,7 @@ export async function checkTokenEligibility(
         where: { orgId: listing.publisherId },
       }),
       prisma.agentDeployment.findMany({
-        where: { agentId: listing.agent.id },
+        where: { agentId: agent.id },
         select: { id: true, modelDeploymentId: true },
       }),
     ]);
@@ -194,7 +206,7 @@ export async function checkTokenEligibility(
     // deployment has run for 0 days. Whole days, never below 0.
     const reputationScore = publisherProfile?.reputationScore ?? 0;
     const oldestDeployment =
-      listing.agent.deployments.length > 0 ? listing.agent.deployments[0] : null;
+      agent.deployments.length > 0 ? agent.deployments[0] : null;
     const deploymentAgeDays = oldestDeployment
       ? Math.max(
           0,

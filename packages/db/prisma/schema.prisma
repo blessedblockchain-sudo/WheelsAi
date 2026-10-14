@@ -1352,7 +1352,14 @@ model X402SettlementMetric {
 
 model AgentListing {
   id                String    @id @default(uuid()) @db.Uuid
-  agentId           String    @unique @map("agent_id") @db.Uuid
+  // What a listing sells is one agent or one workflow: exactly one of the
+  // two ids is set (CHECK in the migration). Every listing from before a
+  // workflow could be sold has an agent.
+  agentId           String?   @unique @map("agent_id") @db.Uuid
+  // The workflow a listing sells. A workflow has at most one listing, that
+  // listing sells use and never copies (CHECK in the migration), and a
+  // workflow that is on a listing cannot be deleted from under it.
+  orchestrationId   String?   @unique @map("orchestration_id") @db.Uuid
   title             String
   slug              String    @unique // URL-friendly identifier
   shortDescription  String    @map("short_description") @db.VarChar(280)
@@ -1397,9 +1404,10 @@ model AgentListing {
   // agent runs on is one its organization runs, and it is not answering.
   // While it is set no subscription to the listing is renewed, and when it
   // is cleared every month paid for is made longer by the time it was set
-  // (services/listingPause.ts). Whether a listing can be bought or used at
-  // a given moment is asked of the agent's model at that moment, never
-  // read from here: this is only when the subscribers' clock stopped.
+  // (services/listingPause.ts). Whether such a listing can be bought or
+  // used at a given moment is asked of the agent's model at that moment,
+  // never read from here: this is only when the subscribers' clock stopped.
+  // A listing that sells a workflow is never paused and never carries it.
   pausedSince       DateTime? @map("paused_since")
   isFeatured        Boolean   @default(false) @map("is_featured")
   totalInstalls     Int       @default(0) @map("total_installs")
@@ -1412,7 +1420,10 @@ model AgentListing {
   createdAt         DateTime  @default(now()) @map("created_at")
   updatedAt         DateTime  @updatedAt @map("updated_at")
 
-  agent             Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  // Cascade stays written out: for an optional relation Prisma's own
+  // default would be SetNull, which would leave a listing selling nothing.
+  agent             Agent?    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  orchestration     Orchestration? @relation(fields: [orchestrationId], references: [id], onDelete: Restrict)
   publisher         Organization @relation("PublishedAgents", fields: [publisherId], references: [id])
   reviews           AgentReview[]
   installs          AgentInstall[]
@@ -3081,6 +3092,8 @@ model Orchestration {
   executions    OrchestrationExecution[]
   offerings  Offering[]
   schedules     ScheduledTask[]
+  // The listing that sells this workflow, if it is on sale.
+  listing       AgentListing?
 
   @@unique([orgId, name])
   @@unique([orgId, slug])

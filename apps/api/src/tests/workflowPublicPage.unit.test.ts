@@ -10,6 +10,7 @@ import { createPaidWorkflowRoutes } from "../routes/paidWorkflow.js";
 import { createPaidWorkflowRoutesProduction } from "../routes/paidWorkflowBindings.js";
 import { paidWorkflowOpenAiModel } from "../routes/paidWorkflowCompletions.js";
 import { paidUseOpenAiError } from "../services/openaiCompat.js";
+import { saleHold, type SaleHoldDb } from "../services/orchestration.js";
 import { PAID_USE_LIMITS, type PaidUseRefusal } from "../services/paidUse.js";
 import { runPaidWorkflow, type PaidWorkflowResult } from "../services/paidWorkflow.js";
 import { BALANCE_CENTS_HEADER, CHARGED_CENTS_HEADER, PLAN_USAGE_HEADER_NAMES } from "../services/usageHeaders.js";
@@ -46,6 +47,7 @@ import {
 // name nothing of what is inside the workflow or of who sells it; every slug
 // that has no page is the same 404; a form with no fields is one text box;
 // and every refusal the API page tells is what the two doors really answer.
+// A listing taken off sale keeps both while somebody's plan on it runs.
 
 const LISTING_ID = "lst-w1";
 const AGENT_LISTING_SLUG = "support-bot";
@@ -79,8 +81,45 @@ const PLANS = [
   { id: "plan-l", name: "Large", priceCents: 4_000n, includedUses: 1_000, extraUsePriceCents: null },
 ];
 
+/** The clock of the test of a running plan. */
+const NOW = new Date("2026-10-14T12:00:00.000Z");
+const LATER = new Date("2026-11-01T00:00:00.000Z");
+const EARLIER = new Date("2026-10-01T00:00:00.000Z");
+
+/** A buyer's subscription to a listing, as the test of a running plan reads it. */
+interface Sub {
+  listingId: string;
+  status: string;
+  currentPeriodEnd: Date;
+}
+
+/** The two tables saleHold reads, over the world's rows. */
+function saleHoldDbOf(listings: WorkflowPublicListing[], subs: Sub[]): SaleHoldDb {
+  return {
+    agentListing: {
+      findFirst: async ({ where }) => {
+        const row = listings.find(
+          (listing) => listing.orchestrationId === where.orchestrationId && listing.publisherId === where.publisherId,
+        );
+        return row ? { id: row.id, status: row.status } : null;
+      },
+    },
+    agentSubscription: {
+      count: async ({ where }) =>
+        subs.filter(
+          (sub) =>
+            sub.listingId === where.listingId &&
+            sub.status === where.status &&
+            sub.currentPeriodEnd.getTime() > where.currentPeriodEnd.gt.getTime(),
+        ).length,
+    },
+  };
+}
+
 interface World {
   listings?: Array<WorkflowPublicListing & Record<string, unknown>>;
+  /** The buyers' subscriptions: none unless a test says. */
+  subs?: Sub[];
   plans?: typeof PLANS;
   /** What the form read hands back for the workflow; null when it is not in the publisher's organization. */
   workflow?: Record<string, unknown> | null;
@@ -128,6 +167,12 @@ function depsOf(world: World = {}, log: string[] = []): WorkflowPublicPageDeps {
       if (!workflow) return null;
       return ref.workflowId === workflow.id && ref.orgId === workflow.orgId ? (workflow as { inputSchema: unknown }) : null;
     },
+    // The real test of a running plan, over the world's rows, as the binding asks it.
+    loadSaleHold: async (ref, now) => {
+      log.push(`hold:${ref.workflowId}:${ref.orgId}:${now.toISOString()}`);
+      return saleHold(ref.workflowId, ref.orgId, now, saleHoldDbOf(listings, world.subs ?? []));
+    },
+    now: () => NOW,
     publicApiUrl: world.publicApiUrl === undefined ? "https://api.wheelsai.test/" : world.publicApiUrl,
   };
 }
@@ -245,6 +290,71 @@ test("an unknown slug, an agent's listing, a draft, a stopped listing and a miss
     ["a row sold by the month", { listings: [{ ...LISTING, pricingModel: "monthly" }] }, `/api/w/${SLUG}`],
     ["a row with no price", { listings: [{ ...LISTING, pricePerRequestCents: null }] }, `/api/w/${SLUG}`],
     ["a workflow no longer in the publisher's organization", { workflow: null }, `/api/w/${SLUG}`],
+  ];
+  for (const [name, world, url] of cases) {
+    for (const path of [url, `${url}/api`]) {
+      const res = await get(world, path);
+      assert.equal(res.status, 404, `${name}: ${path}`);
+      assert.deepEqual(res.body, { error: "workflow_not_found" }, `${name}: ${path}`);
+    }
+  }
+});
+
+test("a listing taken off sale keeps both pages, word for word, while somebody's plan on it still runs", async () => {
+  const running: Sub = { listingId: LISTING_ID, status: "active", currentPeriodEnd: LATER };
+  for (const path of [`/api/w/${SLUG}`, `/api/w/${SLUG}/api`]) {
+    const onSale = await get({ plans: PLANS }, path);
+    assert.equal(onSale.status, 200, path);
+    for (const status of ["archived", "draft"]) {
+      const stopped = await get({ plans: PLANS, listings: [{ ...LISTING, status }], subs: [running] }, path);
+      assert.equal(stopped.status, 200, `${status}: ${path}`);
+      // Nothing new in it: the same answer as while it was on sale, but that a
+      // listing no longer on sale offers no plan, as an agent's does not.
+      assert.deepEqual(stopped.body, { ...onSale.body, plans: [] }, `${status}: ${path}`);
+    }
+  }
+  // The plan is read by the workflow and its publisher, at the injected time, only for a listing not published.
+  const log: string[] = [];
+  await readWorkflowPublicSource(SLUG, depsOf({ listings: [{ ...LISTING, status: "archived" }], subs: [running] }, log));
+  assert.deepEqual(log.slice(0, 3), [
+    `listing:${SLUG}`,
+    `hold:${WORKFLOW_ID}:${CREATOR_ORG}:${NOW.toISOString()}`,
+    `workflow:${WORKFLOW_ID}:${CREATOR_ORG}`,
+  ]);
+  const published: string[] = [];
+  await readWorkflowPublicSource(SLUG, depsOf({ subs: [running] }, published));
+  assert.ok(!published.some((line) => line.startsWith("hold:")), "a published listing is not asked about plans");
+});
+
+test("a listing taken off sale with no plan still running, or none at all, is the same 404", async () => {
+  const stopped = { ...LISTING, status: "archived" };
+  const cases: Array<[string, Sub[]]> = [
+    ["no plan", []],
+    ["a plan whose period ended", [{ listingId: LISTING_ID, status: "active", currentPeriodEnd: EARLIER }]],
+    ["a plan whose period ends now", [{ listingId: LISTING_ID, status: "active", currentPeriodEnd: NOW }]],
+    ["a plan that was cancelled", [{ listingId: LISTING_ID, status: "cancelled", currentPeriodEnd: LATER }]],
+    ["a plan that expired", [{ listingId: LISTING_ID, status: "expired", currentPeriodEnd: LATER }]],
+    ["a plan on another listing", [{ listingId: "lst-other", status: "active", currentPeriodEnd: LATER }]],
+  ];
+  for (const [name, subs] of cases) {
+    for (const path of [`/api/w/${SLUG}`, `/api/w/${SLUG}/api`]) {
+      const res = await get({ listings: [stopped], subs }, path);
+      assert.equal(res.status, 404, `${name}: ${path}`);
+      assert.deepEqual(res.body, { error: "workflow_not_found" }, `${name}: ${path}`);
+    }
+  }
+});
+
+test("a running plan opens no page that has none for another reason", async () => {
+  const running = (listingId: string): Sub[] => [{ listingId, status: "active", currentPeriodEnd: LATER }];
+  const stopped = { ...LISTING, status: "archived" };
+  const cases: Array<[string, World, string]> = [
+    ["the slug of an agent's listing", { subs: running(AGENT_LISTING.id) }, `/api/w/${AGENT_LISTING_SLUG}`],
+    ["a stopped agent's listing", { listings: [{ ...AGENT_LISTING, status: "archived" }], subs: running(AGENT_LISTING.id) }, `/api/w/${AGENT_LISTING_SLUG}`],
+    ["a row that sells copies", { listings: [{ ...stopped, sells: "copies" }], subs: running(LISTING_ID) }, `/api/w/${SLUG}`],
+    ["a row sold by the month", { listings: [{ ...stopped, pricingModel: "monthly" }], subs: running(LISTING_ID) }, `/api/w/${SLUG}`],
+    ["a row with no price", { listings: [{ ...stopped, pricePerRequestCents: null }], subs: running(LISTING_ID) }, `/api/w/${SLUG}`],
+    ["a workflow no longer in the publisher's organization", { listings: [stopped], subs: running(LISTING_ID), workflow: null }, `/api/w/${SLUG}`],
   ];
   for (const [name, world, url] of cases) {
     for (const path of [url, `${url}/api`]) {

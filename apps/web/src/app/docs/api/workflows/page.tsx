@@ -597,8 +597,8 @@ console.log(reply.choices[0].message.content);`}
           listing keeps what it sells. <code>POST /api/marketplace/listings/&#123;id&#125;/publish</code> puts it on sale,
           and <code>POST /api/marketplace/listings/&#123;id&#125;/archive</code> stops selling it: it leaves the
           marketplace, and buyers on a plan keep it until the 30 days they paid for end. Until then they run it at{" "}
-          <code>POST /api/w/&#123;slug&#125;/run</code> and as model <code>w/&#123;slug&#125;</code>; its page and its
-          API page are no longer shown.{" "}
+          <code>POST /api/w/&#123;slug&#125;/run</code> and as model <code>w/&#123;slug&#125;</code>, and its page and its
+          API page stay up for them until the last of those plans ends.{" "}
           <code>GET /api/marketplace/my-listings</code> carries <code>productKind</code> and{" "}
           <code>orchestrationId</code> on each listing.
         </p>
@@ -739,7 +739,9 @@ console.log(reply.choices[0].message.content);`}
         <p>
           What its page shows before anyone pays. No sign-in. A slug that names no workflow on sale, the slug of an
           agent&apos;s listing and a listing that is not on sale all answer <code>404</code>{" "}
-          <code>&#123; &quot;error&quot;: &quot;workflow_not_found&quot; &#125;</code>.
+          <code>&#123; &quot;error&quot;: &quot;workflow_not_found&quot; &#125;</code>, except a listing taken off sale
+          while somebody&apos;s plan on it still runs: it answers as before, with no plans on offer, until the last of
+          those plans ends. The same holds for its API page.
         </p>
         <CodeBlock
           language="json"

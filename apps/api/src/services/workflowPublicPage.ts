@@ -16,8 +16,10 @@
  * people use it. The only ids are the listing's (the gate starts, starts a
  * plan and moves by it) and each plan's (a plan is started by its id).
  *
- * Only a listing that sells a workflow, is published, sells use and has a
- * price per run has these reads. Anything else is not found, the same as a
+ * Only a listing that sells a workflow, sells use and has a price per run
+ * has these reads, and only while it is published or somebody's plan on it
+ * still runs: a creator who stops selling leaves the people on a plan their
+ * page until their 30 days end. Anything else is not found, the same as a
  * slug that no listing holds.
  *
  * Pure: the reads are dependencies (routes/paidWorkflowBindings.ts binds the
@@ -88,6 +90,15 @@ export interface WorkflowPublicPageDeps {
    * publisher), for its input form; null when it is not there.
    */
   loadWorkflowForm(ref: { workflowId: string; orgId: string }): Promise<{ inputSchema: unknown } | null>;
+  /**
+   * What holds the workflow's listing, asked only of one that is not
+   * published: "on_plan" while somebody's plan on it still runs. The one
+   * test of that is saleHold (services/orchestration.ts), which the binding
+   * calls.
+   */
+  loadSaleHold(ref: { workflowId: string; orgId: string }, now: Date): Promise<"on_sale" | "on_plan" | null>;
+  /** The clock of that test. */
+  now?: () => Date;
   /** The address this API is reached at from outside, for the API page. */
   publicApiUrl?: string | null;
   logger?: PaidUseDeps["logger"];
@@ -118,10 +129,19 @@ export async function readWorkflowPublicSource(
   const listing = await deps.loadListingBySlug(slug);
   // An agent's listing has a slug too: it is not a workflow, and is not found here.
   if (!listing || listing.orchestrationId === null || listingProductKind(listing) !== "workflow") return null;
-  // A draft, a listing that was stopped, and a row that does not sell use per
-  // run (which only a corrupt row can be) have no page.
-  if (listing.status !== "published" || listing.sells !== "use" || listing.pricingModel !== "per_request") return null;
+  // A row that does not sell use per run (which only a corrupt row can be)
+  // has no page.
+  if (listing.sells !== "use" || listing.pricingModel !== "per_request") return null;
   if (listing.pricePerRequestCents === null) return null;
+  // A draft and a listing that was stopped have none either, except while
+  // somebody's plan on it still runs: they paid for 30 days of its page too.
+  if (listing.status !== "published") {
+    const hold = await deps.loadSaleHold(
+      { workflowId: listing.orchestrationId, orgId: listing.publisherId },
+      deps.now?.() ?? new Date(),
+    );
+    if (hold === null) return null;
+  }
 
   // Never by the workflow's id alone: a workflow that is no longer in the
   // publisher's organization has no form to show.

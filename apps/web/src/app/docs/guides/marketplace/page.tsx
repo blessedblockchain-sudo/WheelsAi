@@ -259,7 +259,7 @@ export default function MarketplaceGuidePage() {
         </li>
         <li>
           <strong>Stop selling</strong> takes it off the marketplace. People on a plan keep it until the 30 days they
-          paid for end, through the API: its page is no longer shown.
+          paid for end, on its page and through the API.
         </li>
       </ul>
       <p>

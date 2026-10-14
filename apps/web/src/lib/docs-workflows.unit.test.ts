@@ -536,11 +536,18 @@ test("what the pages say of plans, the model list and a stopped listing is what 
   assert.ok(text(market).includes(`That holds while its listing is published; ${closes}`));
   assert.ok(text(deployments).includes("That holds while its listing is published; once it is not (onSale false), every plan on it ends at the end of its 30 days, uncharged, whatever the workflow can do."));
 
-  // A stopped listing has no page, while its plans still run through the API.
+  // A stopped listing keeps its page and its API page while somebody's plan on it runs, by the one test of that.
   const pageSource = apiSource("services/workflowPublicPage.ts");
-  assert.match(pageSource, /if \(listing\.status !== "published" \|\| listing\.sells !== "use" \|\| listing\.pricingModel !== "per_request"\) return null;/);
-  assert.ok(text(sellPart).includes("its page and its API page are no longer shown."));
-  assert.ok(text(guide).includes("People on a plan keep it until the 30 days they paid for end, through the API: its page is no longer shown."));
+  assert.match(pageSource, /if \(listing\.sells !== "use" \|\| listing\.pricingModel !== "per_request"\) return null;/);
+  assert.match(pageSource, /if \(listing\.status !== "published"\) \{\s+const hold = await deps\.loadSaleHold\([\s\S]{0,200}?\);\s+if \(hold === null\) return null;/);
+  assert.match(apiSource("routes/paidWorkflowBindings.ts"), /\(await import\("\.\.\/services\/orchestration\.js"\)\)\.saleHold\(ref\.workflowId, ref\.orgId, now\)/);
+  // A listing that is not published offers no plan: the page of a stopped one has none.
+  assert.match(apiSource("services/paidUse.ts"), /if \(!offersPlans\(listing\)\) return \[\];/);
+  assert.match(apiSource("services/planOffers.ts"), /return listing\.status === "published" && listing\.sells === "use"/);
+  assert.ok(text(sellPart).includes("its page and its API page stay up for them until the last of those plans ends."));
+  assert.ok(text(usePart).includes("except a listing taken off sale while somebody's plan on it still runs: it answers as before, with no plans on offer, until the last of those plans ends. The same holds for its API page."));
+  assert.ok(text(guide).includes("People on a plan keep it until the 30 days they paid for end, on its page and through the API."));
+  for (const page of [text(sellPart), text(usePart), text(guide)]) assert.doesNotMatch(page, /no longer shown/);
 
   // A busy workflow found after the charge gives the charge back: the guide never says nothing was charged then.
   assert.match(apiSource("services/paidWorkflow.ts"), /function busyAfterCharge/);

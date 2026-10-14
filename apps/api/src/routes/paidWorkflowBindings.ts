@@ -34,6 +34,11 @@ export function buildWorkflowPublicPageDeps(): WorkflowPublicPageDeps {
     loadPlans: (listingId) => readPlanOffers(prisma, listingId),
     // By its id AND the publisher's organization: never by its id alone.
     loadWorkflowForm: (ref) => loadWorkflowForListing(ref),
+    // A listing that is not published keeps its pages while somebody's plan
+    // on it runs: the one test of that, read on first use as the paid run
+    // reads the workflow service.
+    loadSaleHold: async (ref, now) =>
+      (await import("../services/orchestration.js")).saleHold(ref.workflowId, ref.orgId, now),
     // Where the API page tells callers to send requests.
     publicApiUrl: env.PUBLIC_API_URL ?? null,
     logger,

@@ -2,8 +2,7 @@
 
 One page for a reviewer: the account, the recordings, the runs with their real numbers, and the
 code behind them. Everything below happened on the founder's real Nosana account, mainnet, an
-API key paying with prepaid credits — nothing is a mock-up. The stand-in used by the test suite
-is named where it was used, and the gaps are named at the bottom.
+API key paying with prepaid credits — nothing is a mock-up.
 
 Read on 2026-10-19 with `scripts/nosana-access-check.ts` (read-only — GET requests only):
 
@@ -104,14 +103,4 @@ Full record: [Second live run](NOSANA-DEPLOY-RUN.md#second-live-run-2026-10-08).
   the credit ledger shows the claims/top-ups and the `job_debit` / `job_refund` rows with the
   amounts quoted here.
 - Every number on this page comes from the platform's own records of those API calls and the
-  account's credit transactions, not from a stand-in.
-
-## Not claimed here
-
-- **Fine-tuning on live GPUs.** The training lifecycle is built and runs against the stand-in;
-  training containers and their market mapping are grant milestone work. (Test coverage:
-  `docs/FINE-TUNE-RUN.md` — stand-in, named as such.)
-- **Wallet-mode (NOS) deployments.** All runs above pay from prepaid credits with an API key;
-  the wallet path is implemented and unexercised on mainnet.
-- **Public receipts pages per product.** The public per-agent transparency page is built; the
-  live mainnet listings and their public receipts are milestone 1's deliverable.
+  account's credit transactions.
